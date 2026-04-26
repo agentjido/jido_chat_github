@@ -17,7 +17,9 @@ defmodule Jido.Chat.GitHub.MixProject do
       name: "Jido Chat GitHub",
       description: @description,
       source_url: @source_url,
-      homepage_url: @source_url
+      homepage_url: @source_url,
+      package: package(),
+      docs: docs()
     ]
   end
 
@@ -49,6 +51,31 @@ defmodule Jido.Chat.GitHub.MixProject do
         "compile --warnings-as-errors",
         "credo --strict",
         "test"
+      ]
+    ]
+  end
+
+  defp package do
+    [
+      files: ["lib", "mix.exs", "README.md", "usage-rules.md"],
+      maintainers: ["Mike Hostetler"],
+      licenses: ["Apache-2.0"],
+      links: %{
+        "Documentation" => "https://hexdocs.pm/jido_chat_github",
+        "GitHub" => @source_url,
+        "Website" => "https://jido.run"
+      }
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_ref: "v#{@version}",
+      source_url: @source_url,
+      extras: [
+        "README.md",
+        "usage-rules.md"
       ]
     ]
   end

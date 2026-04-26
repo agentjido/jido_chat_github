@@ -2,6 +2,7 @@ defmodule Jido.Chat.GitHub.LiveIntegrationTest do
   use ExUnit.Case, async: false
 
   alias Jido.Chat.GitHub.Adapter
+  alias Jido.Chat.PostPayload
 
   @moduletag :live
 
@@ -29,6 +30,30 @@ defmodule Jido.Chat.GitHub.LiveIntegrationTest do
                  opts
                )
 
+      payload =
+        PostPayload.new(%{
+          kind: :markdown,
+          markdown: "#{text} rich",
+          files: [
+            %{
+              kind: :image,
+              url: "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
+              filename: "GitHub-Mark.png"
+            }
+          ]
+        })
+
+      assert {:ok, rich} =
+               Adapter.post_message(
+                 room_id,
+                 payload,
+                 Keyword.merge(opts, reply_to_id: sent.external_message_id)
+               )
+
+      assert :ok = Adapter.add_reaction(room_id, rich.external_message_id, "rocket", opts)
+      assert :ok = Adapter.remove_reaction(room_id, rich.external_message_id, "rocket", opts)
+
+      assert :ok = Adapter.delete_message(room_id, rich.external_message_id, opts)
       assert :ok = Adapter.delete_message(room_id, sent.external_message_id, opts)
     else
       refute run_live?(token, room_id)
