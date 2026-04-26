@@ -131,7 +131,26 @@ defmodule Jido.Chat.GitHub.Adapter do
   end
 
   @impl true
-  def verify_webhook(%WebhookRequest{} = request, opts \\ []) do
+  def handle_webhook(%Jido.Chat{} = chat, payload, opts \\ []) when is_map(payload) do
+    request =
+      WebhookRequest.new(%{
+        adapter_name: :github,
+        headers: opts[:headers] || %{},
+        payload: payload,
+        raw: opts[:raw_body] || opts[:raw] || payload,
+        metadata: %{raw_body: opts[:raw_body] || opts[:raw]}
+      })
+
+    with :ok <- verify_webhook(request, opts),
+         {:ok, parsed_event} <- parse_event(request, opts) do
+      route_parsed_event(chat, parsed_event, opts, request)
+    end
+  end
+
+  @impl true
+  def verify_webhook(request, opts \\ [])
+
+  def verify_webhook(%WebhookRequest{} = request, opts) do
     secret = Keyword.get(opts, :webhook_secret) || System.get_env("GITHUB_WEBHOOK_SECRET")
     signature = WebhookRequest.header(request, "x-hub-signature-256")
     raw = raw_body(request)
@@ -144,8 +163,16 @@ defmodule Jido.Chat.GitHub.Adapter do
     end
   end
 
+  def verify_webhook(request, opts) when is_map(request) do
+    request
+    |> WebhookRequest.new()
+    |> verify_webhook(opts)
+  end
+
   @impl true
-  def parse_event(%WebhookRequest{} = request, _opts \\ []) do
+  def parse_event(request, opts \\ [])
+
+  def parse_event(%WebhookRequest{} = request, _opts) do
     event = WebhookRequest.header(request, "x-github-event")
     action = request.payload["action"]
 
@@ -166,6 +193,12 @@ defmodule Jido.Chat.GitHub.Adapter do
       _ ->
         {:ok, :noop}
     end
+  end
+
+  def parse_event(request, opts) when is_map(request) do
+    request
+    |> WebhookRequest.new()
+    |> parse_event(opts)
   end
 
   @impl true
@@ -243,6 +276,34 @@ defmodule Jido.Chat.GitHub.Adapter do
       channel_type: :github,
       raw: comment,
       metadata: %{"html_url" => comment["html_url"]}
+    })
+  end
+
+  defp route_parsed_event(chat, :noop, _opts, %WebhookRequest{} = request) do
+    {:ok, chat, synthetic_incoming(request, :noop)}
+  end
+
+  defp route_parsed_event(chat, %EventEnvelope{} = envelope, opts, _request) do
+    with {:ok, updated_chat, routed_envelope} <-
+           Jido.Chat.process_event(chat, :github, envelope, opts),
+         {:ok, incoming} <- incoming_from_event(routed_envelope) do
+      {:ok, updated_chat, incoming}
+    end
+  end
+
+  defp incoming_from_event(%EventEnvelope{event_type: :message, payload: %Incoming{} = incoming}),
+    do: {:ok, incoming}
+
+  defp incoming_from_event(_), do: {:error, :unsupported_event_type}
+
+  defp synthetic_incoming(%WebhookRequest{} = request, event_type) do
+    Incoming.new(%{
+      external_room_id: "github",
+      external_user_id: nil,
+      external_message_id: WebhookRequest.header(request, "x-github-delivery"),
+      text: nil,
+      raw: request.payload,
+      metadata: %{event_type: event_type}
     })
   end
 
