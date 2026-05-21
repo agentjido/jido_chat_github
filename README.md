@@ -2,6 +2,16 @@
 
 `jido_chat_github` adapts GitHub Issues and issue comments to the `Jido.Chat.Adapter` contract.
 
+## Installation
+
+```elixir
+def deps do
+  [
+    {:jido_chat_github, "~> 0.1"}
+  ]
+end
+```
+
 ## Feature surface
 
 - Repositories map to channel-level rooms as `owner/repo`.

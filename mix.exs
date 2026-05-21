@@ -34,12 +34,13 @@ defmodule Jido.Chat.GitHub.MixProject do
 
   defp deps do
     [
-      {:jido_chat, path: "../jido_chat"},
+      {:jido_chat, "~> 1.0"},
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
       {:dotenvy, "~> 1.1", only: [:test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      {:git_ops, "~> 2.9", only: :dev, runtime: false}
     ]
   end
 
@@ -57,10 +58,11 @@ defmodule Jido.Chat.GitHub.MixProject do
 
   defp package do
     [
-      files: ["lib", "mix.exs", "README.md", "usage-rules.md"],
+      files: ["lib", "mix.exs", "README.md", "CHANGELOG.md", "usage-rules.md"],
       maintainers: ["Mike Hostetler"],
       licenses: ["Apache-2.0"],
       links: %{
+        "Changelog" => "https://github.com/agentjido/jido_chat_github/blob/main/CHANGELOG.md",
         "Documentation" => "https://hexdocs.pm/jido_chat_github",
         "GitHub" => @source_url,
         "Website" => "https://jido.run"
