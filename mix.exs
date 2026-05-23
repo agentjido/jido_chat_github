@@ -1,7 +1,7 @@
 defmodule Jido.Chat.GitHub.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "1.0.0"
   @source_url "https://github.com/agentjido/jido_chat_github"
   @description "GitHub Issues adapter package for Jido.Chat"
 
@@ -63,6 +63,7 @@ defmodule Jido.Chat.GitHub.MixProject do
       licenses: ["Apache-2.0"],
       links: %{
         "Changelog" => "https://github.com/agentjido/jido_chat_github/blob/main/CHANGELOG.md",
+        "Discord" => "https://jido.run/discord",
         "Documentation" => "https://hexdocs.pm/jido_chat_github",
         "GitHub" => @source_url,
         "Website" => "https://jido.run"
