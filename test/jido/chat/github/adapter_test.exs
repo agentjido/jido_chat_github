@@ -222,15 +222,17 @@ defmodule Jido.Chat.GitHub.AdapterTest do
         "body" =>
           "hello ![PNG](https://example.test/screenshot.png?token=signed) " <>
             "![JPEG](https://example.test/photo.jpg) " <>
+            "![Encoded](https://example.test/photo%2EPNG?token=signed) " <>
             "![Unknown](https://example.test/assets/image) " <>
-            "![Misleading](https://example.test/report.pdf)",
+            "![Misleading](https://example.test/report.pdf) " <>
+            "![Malformed](https://example.test/photo%ZZ.png)",
         "user" => %{"id" => 1, "login" => "mike"}
       }
     }
 
     assert {:ok, incoming} = Adapter.transform_incoming(payload)
     assert incoming.external_room_id == "agentjido/demo#42"
-    assert [png, jpeg, extensionless, misleading] = incoming.media
+    assert [png, jpeg, encoded, extensionless, misleading, malformed] = incoming.media
 
     assert png.kind == :image
     assert png.url == "https://example.test/screenshot.png?token=signed"
@@ -239,11 +241,19 @@ defmodule Jido.Chat.GitHub.AdapterTest do
     assert jpeg.kind == :image
     assert jpeg.media_type == "image/jpeg"
 
+    assert encoded.kind == :image
+    assert encoded.filename == "photo.PNG"
+    assert encoded.media_type == "image/png"
+
     assert extensionless.kind == :image
     assert extensionless.media_type == nil
 
     assert misleading.kind == :image
     assert misleading.media_type == nil
+
+    assert malformed.kind == :image
+    assert malformed.filename == nil
+    assert malformed.media_type == nil
   end
 
   test "lists and opens GitHub issues as chat threads" do

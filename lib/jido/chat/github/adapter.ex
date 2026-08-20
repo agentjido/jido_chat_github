@@ -61,6 +61,7 @@ defmodule Jido.Chat.GitHub.Adapter do
     ".tiff" => "image/tiff",
     ".webp" => "image/webp"
   }
+  @invalid_percent_encoding ~r/%(?![0-9A-Fa-f]{2})/
 
   @impl true
   def channel_type, do: :github
@@ -993,9 +994,17 @@ defmodule Jido.Chat.GitHub.Adapter do
     |> URI.parse()
     |> Map.get(:path)
     |> case do
-      nil -> nil
-      "" -> nil
-      path -> path |> Path.basename() |> URI.decode()
+      nil ->
+        nil
+
+      "" ->
+        nil
+
+      path ->
+        if(Regex.match?(@invalid_percent_encoding, path),
+          do: nil,
+          else: path |> Path.basename() |> URI.decode()
+        )
     end
   rescue
     _ -> nil
