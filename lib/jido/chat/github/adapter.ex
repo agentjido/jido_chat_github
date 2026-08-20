@@ -49,6 +49,19 @@ defmodule Jido.Chat.GitHub.Adapter do
     <<0x1F440::utf8>> => "eyes"
   }
 
+  @image_media_types %{
+    ".avif" => "image/avif",
+    ".bmp" => "image/bmp",
+    ".gif" => "image/gif",
+    ".jpeg" => "image/jpeg",
+    ".jpg" => "image/jpeg",
+    ".png" => "image/png",
+    ".svg" => "image/svg+xml",
+    ".tif" => "image/tiff",
+    ".tiff" => "image/tiff",
+    ".webp" => "image/webp"
+  }
+
   @impl true
   def channel_type, do: :github
 
@@ -830,6 +843,7 @@ defmodule Jido.Chat.GitHub.Adapter do
           kind: :image,
           url: url,
           filename: filename_from_url(url),
+          media_type: image_media_type_from_url(url),
           metadata: %{"alt_text" => alt}
         })
       end)
@@ -842,6 +856,19 @@ defmodule Jido.Chat.GitHub.Adapter do
       end)
 
     images ++ linked_files
+  end
+
+  defp image_media_type_from_url(url) do
+    case filename_from_url(url) do
+      filename when is_binary(filename) ->
+        filename
+        |> Path.extname()
+        |> String.downcase()
+        |> then(&Map.get(@image_media_types, &1))
+
+      _other ->
+        nil
+    end
   end
 
   defp github_reaction(emoji) do

@@ -219,15 +219,31 @@ defmodule Jido.Chat.GitHub.AdapterTest do
       "issue" => %{"id" => 9, "number" => 42, "title" => "Demo"},
       "comment" => %{
         "id" => 123,
-        "body" => "hello ![Screenshot](https://example.test/screenshot.png)",
+        "body" =>
+          "hello ![PNG](https://example.test/screenshot.png?token=signed) " <>
+            "![JPEG](https://example.test/photo.jpg) " <>
+            "![Unknown](https://example.test/assets/image) " <>
+            "![Misleading](https://example.test/report.pdf)",
         "user" => %{"id" => 1, "login" => "mike"}
       }
     }
 
     assert {:ok, incoming} = Adapter.transform_incoming(payload)
     assert incoming.external_room_id == "agentjido/demo#42"
-    assert incoming.text == "hello ![Screenshot](https://example.test/screenshot.png)"
-    assert [%{kind: :image, url: "https://example.test/screenshot.png"}] = incoming.media
+    assert [png, jpeg, extensionless, misleading] = incoming.media
+
+    assert png.kind == :image
+    assert png.url == "https://example.test/screenshot.png?token=signed"
+    assert png.media_type == "image/png"
+
+    assert jpeg.kind == :image
+    assert jpeg.media_type == "image/jpeg"
+
+    assert extensionless.kind == :image
+    assert extensionless.media_type == nil
+
+    assert misleading.kind == :image
+    assert misleading.media_type == nil
   end
 
   test "lists and opens GitHub issues as chat threads" do
