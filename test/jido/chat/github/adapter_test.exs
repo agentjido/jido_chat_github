@@ -7,13 +7,17 @@ defmodule Jido.Chat.GitHub.AdapterTest do
   alias Jido.Chat.{
     EventEnvelope,
     MessagePage,
+    MessageSubject,
+    Participant,
     PostPayload,
     ReactionEvent,
     ThreadPage,
+    UserInfo,
     WebhookRequest
   }
 
   alias Jido.Chat.GitHub.Adapter
+  alias Jido.Chat.GitHub.Transport.ReqClient
 
   defmodule FakeTransport do
     @behaviour Jido.Chat.GitHub.Transport
@@ -52,6 +56,36 @@ defmodule Jido.Chat.GitHub.AdapterTest do
 
     def delete_issue_comment(_, _, _, _opts), do: :ok
 
+    def get_user("missing", _opts), do: {:error, {:github_api_error, 404, %{}}}
+
+    def get_user(login, _opts) do
+      {:ok,
+       %{
+         "id" => 99,
+         "login" => login,
+         "name" => "Ada Lovelace",
+         "email" => "ada@example.test",
+         "avatar_url" => "https://github.test/avatars/ada",
+         "type" => "User",
+         "html_url" => "https://github.test/#{login}"
+       }}
+    end
+
+    def get_issue(_, _, 404, _opts), do: {:error, {:github_api_error, 404, %{}}}
+
+    def get_issue(_, _, 43, _opts) do
+      {:ok,
+       %{
+         "id" => 10,
+         "number" => 43,
+         "title" => "Resource contracts",
+         "html_url" => "https://github.test/pull/43",
+         "state" => "closed",
+         "pull_request" => %{"url" => "https://api.github.test/pulls/43"},
+         "user" => %{"id" => 1, "login" => "mike", "type" => "User"}
+       }}
+    end
+
     def get_issue(_, _, issue_number, _opts),
       do:
         {:ok,
@@ -63,11 +97,63 @@ defmodule Jido.Chat.GitHub.AdapterTest do
            "created_at" => "2026-04-24T12:00:00Z",
            "updated_at" => "2026-04-24T12:00:01Z",
            "html_url" => "https://github.test/issue",
-           "user" => %{"id" => 1, "login" => "mike"}
+           "state" => "open",
+           "locked" => false,
+           "labels" => [%{"name" => "enhancement"}],
+           "user" => %{"id" => 1, "login" => "mike", "type" => "User"},
+           "assignees" => [%{"id" => 2, "login" => "ada", "type" => "User"}]
          }}
 
+    def list_issue_comments(_, _, 500, _opts),
+      do: {:error, {:github_api_error, 503, %{"message" => "unavailable"}}}
+
+    def list_issue_comments(_, _, 44, opts) do
+      case {Keyword.get(opts, :page), Keyword.get(opts, :per_page)} do
+        {1, 100} ->
+          {:ok,
+           Enum.map(1..100, fn id ->
+             %{"id" => id, "user" => %{"id" => id, "login" => "user-#{id}"}}
+           end)}
+
+        {2, 100} ->
+          {:ok,
+           [
+             %{"id" => 101, "user" => %{"id" => 1, "login" => "user-1"}},
+             %{"id" => 102, "user" => %{"id" => 101, "login" => "user-101"}}
+           ]}
+
+        page ->
+          {:error, {:unexpected_comment_page, page}}
+      end
+    end
+
+    def list_issue_comments(_, _, 45, opts) do
+      case {Keyword.get(opts, :page), Keyword.get(opts, :per_page)} do
+        {1, 100} ->
+          {:ok,
+           Enum.map(1..100, fn id ->
+             %{"id" => id, "user" => %{"id" => id, "login" => "user-#{id}"}}
+           end)}
+
+        {2, 100} ->
+          {:error, {:github_api_error, 502, %{"message" => "unavailable"}}}
+
+        page ->
+          {:error, {:unexpected_comment_page, page}}
+      end
+    end
+
     def list_issue_comments(_, _, _, _opts),
-      do: {:ok, [%{"id" => 123, "body" => "hello", "user" => %{"login" => "mike"}}]}
+      do:
+        {:ok,
+         [
+           %{"id" => 123, "body" => "hello", "user" => %{"id" => 1, "login" => "mike"}},
+           %{
+             "id" => 124,
+             "body" => "reviewed",
+             "user" => %{"id" => 3, "login" => "review-bot", "type" => "Bot"}
+           }
+         ]}
 
     def get_issue_comment(_, _, _, _opts),
       do: {:ok, %{"id" => 123, "body" => "hello", "user" => %{"login" => "mike"}}}
@@ -113,6 +199,118 @@ defmodule Jido.Chat.GitHub.AdapterTest do
       send(self(), {:github_delete_comment_reaction, comment_id, reaction_id})
       :ok
     end
+  end
+
+  test "looks up a GitHub user as normalized user information" do
+    assert {:ok, %UserInfo{} = user} =
+             ChatAdapter.get_user(Adapter, "ada", transport: FakeTransport)
+
+    assert user.id == "99"
+    assert user.username == "ada"
+    assert user.display_name == "Ada Lovelace"
+    assert user.email == "ada@example.test"
+    assert user.avatar_url == "https://github.test/avatars/ada"
+    refute user.is_bot
+    assert user.metadata["html_url"] == "https://github.test/ada"
+  end
+
+  test "uses GitHub account routes for numeric IDs and login routes for names" do
+    assert_user_request_path(42, "/user/42")
+    assert_user_request_path("42", "/user/42")
+    assert_user_request_path("ada", "/users/ada")
+  end
+
+  test "sends GitHub comment page and size parameters to the transport" do
+    {port, server} = start_http_server(self(), "[]")
+
+    assert {:ok, []} =
+             ReqClient.list_issue_comments("agentjido", "demo", 42,
+               page: 2,
+               per_page: 100,
+               base_url: "http://127.0.0.1:#{port}"
+             )
+
+    assert_receive {:github_request, request_line}
+    ["GET", target, "HTTP/1.1"] = String.split(request_line, " ")
+
+    assert %URI{path: "/repos/agentjido/demo/issues/42/comments", query: query} =
+             URI.parse(target)
+
+    assert URI.decode_query(query) == %{"page" => "2", "per_page" => "100"}
+    assert_receive {:http_server_stopped, ^server}
+  end
+
+  test "fetches an issue as a normalized message subject" do
+    assert {:ok, %MessageSubject{} = subject} =
+             ChatAdapter.fetch_subject(Adapter, "agentjido/demo#42", transport: FakeTransport)
+
+    assert subject.type == "issue"
+    assert subject.id == "42"
+    assert subject.title == "Demo"
+    assert subject.url == "https://github.test/issue"
+    assert subject.status == "open"
+    assert subject.metadata["repository"] == "agentjido/demo"
+    assert subject.metadata["labels"] == ["enhancement"]
+
+    assert {:ok, %MessageSubject{type: "pull_request", id: "43", status: "closed"}} =
+             ChatAdapter.fetch_subject(Adapter, "agentjido/demo",
+               issue_number: 43,
+               transport: FakeTransport
+             )
+  end
+
+  test "returns unique issue authors, assignees, and commenters as participants" do
+    assert {:ok, participants} =
+             ChatAdapter.get_thread_participants(Adapter, "agentjido/demo#42",
+               transport: FakeTransport
+             )
+
+    assert Enum.all?(participants, &match?(%Participant{}, &1))
+    assert Enum.map(participants, & &1.id) == ["1", "2", "3"]
+    assert Enum.map(participants, & &1.identity.username) == ["mike", "ada", "review-bot"]
+    assert Enum.map(participants, & &1.type) == [:human, :human, :agent]
+    assert Enum.all?(participants, &match?(%{github: _}, &1.external_ids))
+  end
+
+  test "gets participants from all GitHub comment pages and removes duplicates" do
+    assert {:ok, participants} =
+             ChatAdapter.get_thread_participants(Adapter, "agentjido/demo#44",
+               transport: FakeTransport
+             )
+
+    assert length(participants) == 101
+    assert Enum.count(participants, &(&1.id == "1")) == 1
+    assert List.last(participants).id == "101"
+  end
+
+  test "returns an error from a later GitHub comment page" do
+    assert {:error, {:github_api_error, 502, %{"message" => "unavailable"}}} =
+             ChatAdapter.get_thread_participants(Adapter, "agentjido/demo#45",
+               transport: FakeTransport
+             )
+  end
+
+  test "keeps read receipts unsupported and passes provider errors through" do
+    capabilities = ChatAdapter.capabilities(Adapter)
+
+    assert capabilities.get_user == :native
+    assert capabilities.fetch_subject == :native
+    assert capabilities.get_thread_participants == :native
+    assert capabilities.mark_as_read == :unsupported
+
+    assert {:error, :unsupported} =
+             ChatAdapter.mark_as_read(Adapter, "agentjido/demo#42", "123")
+
+    assert {:error, {:github_api_error, 404, %{}}} =
+             ChatAdapter.get_user(Adapter, "missing", transport: FakeTransport)
+
+    assert {:error, {:github_api_error, 404, %{}}} =
+             ChatAdapter.fetch_subject(Adapter, "agentjido/demo#404", transport: FakeTransport)
+
+    assert {:error, {:github_api_error, 503, %{"message" => "unavailable"}}} =
+             ChatAdapter.get_thread_participants(Adapter, "agentjido/demo#500",
+               transport: FakeTransport
+             )
   end
 
   capability_test :send_message, "normalizes a sent issue comment" do
@@ -473,5 +671,48 @@ defmodule Jido.Chat.GitHub.AdapterTest do
   defp github_signature(secret, raw) do
     digest = :crypto.mac(:hmac, :sha256, secret, raw) |> Base.encode16(case: :lower)
     "sha256=" <> digest
+  end
+
+  defp assert_user_request_path(user_id, expected_path) do
+    {port, server} = start_http_server(self())
+
+    assert {:ok, %{}} = ReqClient.get_user(user_id, base_url: "http://127.0.0.1:#{port}")
+    assert_receive {:github_request, "GET " <> ^expected_path <> " HTTP/1.1"}
+    assert_receive {:http_server_stopped, ^server}
+  end
+
+  defp start_http_server(parent, response_body \\ "{}") do
+    {:ok, listener} = :gen_tcp.listen(0, [:binary, packet: :raw, active: false, reuseaddr: true])
+    {:ok, {_address, port}} = :inet.sockname(listener)
+
+    server =
+      spawn_link(fn ->
+        {:ok, socket} = :gen_tcp.accept(listener)
+        request_line = receive_http_request(socket, "") |> String.split("\r\n", parts: 2) |> hd()
+        send(parent, {:github_request, request_line})
+
+        :ok =
+          :gen_tcp.send(
+            socket,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: #{byte_size(response_body)}\r\n\r\n#{response_body}"
+          )
+
+        :gen_tcp.close(socket)
+        :gen_tcp.close(listener)
+        send(parent, {:http_server_stopped, self()})
+      end)
+
+    {port, server}
+  end
+
+  defp receive_http_request(socket, request) do
+    case :binary.match(request, "\r\n\r\n") do
+      :nomatch ->
+        {:ok, chunk} = :gen_tcp.recv(socket, 0)
+        receive_http_request(socket, request <> chunk)
+
+      _match ->
+        request
+    end
   end
 end

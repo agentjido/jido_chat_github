@@ -29,8 +29,13 @@ end
 - `send_message/3`, `post_message/3`, `edit_message/4`, and `delete_message/3` manage issue comments.
 - `fetch_channel_messages/2` and `list_threads/2` list repository issues, excluding pull requests.
 - `fetch_thread/2`, `open_thread/3`, `fetch_message/3`, and `fetch_messages/2` read issue and comment history.
+- `get_user/2` returns normalized GitHub user details.
+- `fetch_subject/2` returns normalized issue or pull-request context.
+- `get_thread_participants/2` returns the issue author, assignees, and commenters without duplicates.
 - `add_reaction/4` and `remove_reaction/4` support GitHub issue and issue-comment reactions.
 - Webhooks verify `X-Hub-Signature-256` and parse `issues`, `issue_comment`, and `reaction` events.
+
+GitHub Issues has no read-receipt operation. The adapter reports `mark_as_read` as unsupported.
 
 GitHub does not accept arbitrary binary uploads through the Issues comments API. Media support is implemented with GitHub Markdown links: remote image URLs render as images, and remote file/audio/video URLs render as links. Local file paths and in-memory uploads should be uploaded elsewhere first, then sent as public or GitHub-accessible URLs.
 

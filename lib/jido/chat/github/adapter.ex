@@ -11,12 +11,14 @@ defmodule Jido.Chat.GitHub.Adapter do
     Media,
     Message,
     MessagePage,
+    MessageSubject,
     PostPayload,
     ReactionEvent,
     Response,
     Thread,
     ThreadPage,
     ThreadSummary,
+    UserInfo,
     WebhookRequest,
     WebhookResponse
   }
@@ -62,6 +64,8 @@ defmodule Jido.Chat.GitHub.Adapter do
     ".webp" => "image/webp"
   }
   @invalid_percent_encoding ~r/%(?![0-9A-Fa-f]{2})/
+  @comment_page_size 100
+  @max_comment_pages 1_000
 
   @impl true
   def channel_type, do: :github
@@ -74,6 +78,10 @@ defmodule Jido.Chat.GitHub.Adapter do
       delete_message: :native,
       fetch_thread: :native,
       fetch_message: :native,
+      get_user: :native,
+      fetch_subject: :native,
+      get_thread_participants: :native,
+      mark_as_read: :unsupported,
       fetch_messages: :native,
       list_threads: :native,
       open_thread: :native,
@@ -176,6 +184,73 @@ defmodule Jido.Chat.GitHub.Adapter do
   def delete_message(room_id, comment_id, opts \\ []) do
     with {:ok, target} <- parse_room_id(room_id) do
       transport(opts).delete_issue_comment(target.owner, target.repo, comment_id, opts)
+    end
+  end
+
+  @impl true
+  def get_user(user_id, opts \\ []) do
+    with {:ok, user} <- transport(opts).get_user(user_id, opts) do
+      {:ok, user_info(user)}
+    end
+  end
+
+  @impl true
+  def fetch_subject(room_id, opts \\ []) do
+    with {:ok, target} <- parse_thread_target(room_id, opts),
+         {:ok, issue} <-
+           transport(opts).get_issue(target.owner, target.repo, target.issue_number, opts) do
+      {:ok, message_subject(issue, target)}
+    end
+  end
+
+  @impl true
+  def get_thread_participants(room_id, opts \\ []) do
+    with {:ok, target} <- parse_thread_target(room_id, opts),
+         {:ok, issue} <-
+           transport(opts).get_issue(target.owner, target.repo, target.issue_number, opts),
+         {:ok, comments} <- list_all_issue_comments(target, opts) do
+      participants =
+        [issue["user"] | List.wrap(issue["assignees"])]
+        |> Kernel.++(Enum.map(comments, & &1["user"]))
+        |> Enum.filter(&valid_github_user?/1)
+        |> Enum.uniq_by(&github_user_key/1)
+        |> Enum.map(&user_info/1)
+
+      {:ok, participants}
+    end
+  end
+
+  defp list_all_issue_comments(target, opts) do
+    list_all_issue_comments(target, opts, 1, [])
+  end
+
+  defp list_all_issue_comments(_target, _opts, page, _comments)
+       when page > @max_comment_pages,
+       do: {:error, :github_comment_page_limit_exceeded}
+
+  defp list_all_issue_comments(target, opts, page, comments) do
+    page_opts = opts |> Keyword.put(:per_page, @comment_page_size) |> Keyword.put(:page, page)
+
+    case transport(opts).list_issue_comments(
+           target.owner,
+           target.repo,
+           target.issue_number,
+           page_opts
+         ) do
+      {:ok, page_comments} when is_list(page_comments) ->
+        all_comments = [page_comments | comments]
+
+        if length(page_comments) < @comment_page_size do
+          {:ok, all_comments |> Enum.reverse() |> List.flatten()}
+        else
+          list_all_issue_comments(target, opts, page + 1, all_comments)
+        end
+
+      {:ok, _response} ->
+        {:error, :invalid_issue_comments_response}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
@@ -611,6 +686,50 @@ defmodule Jido.Chat.GitHub.Adapter do
     })
   end
 
+  defp user_info(user) do
+    UserInfo.new(%{
+      id: user["id"] || user["node_id"] || user["login"],
+      username: user["login"],
+      display_name: user["name"] || user["login"],
+      email: user["email"],
+      avatar_url: user["avatar_url"],
+      is_bot: user["type"] == "Bot",
+      metadata: %{
+        "html_url" => user["html_url"],
+        "type" => user["type"],
+        "raw" => user
+      }
+    })
+  end
+
+  defp message_subject(issue, target) do
+    MessageSubject.new(%{
+      type: if(pull_request_issue?(issue), do: :pull_request, else: :issue),
+      id: issue["number"] || issue["id"] || issue["node_id"],
+      title: issue["title"],
+      url: issue["html_url"],
+      status: issue["state"],
+      metadata: %{
+        "repository" => "#{target.owner}/#{target.repo}",
+        "issue_number" => issue["number"] || target.issue_number,
+        "locked" => issue["locked"] || false,
+        "labels" => Enum.map(issue["labels"] || [], &github_label_name/1),
+        "raw" => issue
+      }
+    })
+  end
+
+  defp valid_github_user?(user) when is_map(user),
+    do: not is_nil(user["id"] || user["node_id"] || user["login"])
+
+  defp valid_github_user?(_user), do: false
+
+  defp github_user_key(user), do: user["id"] || user["node_id"] || user["login"]
+
+  defp github_label_name(%{"name" => name}), do: name
+  defp github_label_name(name) when is_binary(name), do: name
+  defp github_label_name(label), do: label
+
   defp reaction_from_payload(%{"reaction" => reaction, "issue" => issue} = payload) do
     repo = payload["repository"] || %{}
     comment = payload["comment"]
@@ -942,9 +1061,8 @@ defmodule Jido.Chat.GitHub.Adapter do
         {:ok, room_or_repo_id}
 
       {:error, _reason} ->
-        with {:ok, repo} <- parse_repo_id(room_or_repo_id),
-             {:ok, issue_number} <- parse_issue_number(issue_number) do
-          {:ok, "#{repo.owner}/#{repo.repo}##{issue_number}"}
+        with {:ok, target} <- parse_repo_thread_target(room_or_repo_id, issue_number) do
+          {:ok, "#{target.owner}/#{target.repo}##{target.issue_number}"}
         end
     end
   end
@@ -963,6 +1081,26 @@ defmodule Jido.Chat.GitHub.Adapter do
   end
 
   defp parse_room_id(_), do: {:error, :invalid_room_id}
+
+  defp parse_thread_target(room_id, opts) do
+    case parse_room_id(room_id) do
+      {:ok, target} ->
+        {:ok, target}
+
+      {:error, :invalid_room_id} ->
+        parse_repo_thread_target(
+          room_id,
+          opts[:issue_number] || opts[:thread_id] || opts[:external_thread_id]
+        )
+    end
+  end
+
+  defp parse_repo_thread_target(repo_id, issue_number) do
+    with {:ok, repo} <- parse_repo_id(repo_id),
+         {:ok, issue_number} <- parse_issue_number(issue_number) do
+      {:ok, Map.put(repo, :issue_number, issue_number)}
+    end
+  end
 
   defp parse_repo_id(repo_id) when is_binary(repo_id) do
     case Regex.run(~r{\A([^/\s]+)/([^#\s]+)(?:#\d+)?\z}, repo_id) do
