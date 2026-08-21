@@ -15,6 +15,7 @@ defmodule Jido.Chat.GitHub.Transport do
               {:ok, map()} | {:error, term()}
   @callback delete_issue_comment(String.t(), String.t(), integer() | String.t(), keyword()) ::
               :ok | {:error, term()}
+  @callback get_user(String.t() | integer(), keyword()) :: {:ok, map()} | {:error, term()}
   @callback get_issue(String.t(), String.t(), integer(), keyword()) ::
               {:ok, map()} | {:error, term()}
   @callback list_issue_comments(String.t(), String.t(), integer(), keyword()) ::

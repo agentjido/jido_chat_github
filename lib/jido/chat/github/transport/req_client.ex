@@ -3,6 +3,7 @@ defmodule Jido.Chat.GitHub.Transport.ReqClient do
   @behaviour Jido.Chat.GitHub.Transport
 
   @api_version "2026-03-10"
+  @max_comment_page_size 100
 
   @impl true
   def create_issue(owner, repo, title, body, opts) do
@@ -34,13 +35,20 @@ defmodule Jido.Chat.GitHub.Transport.ReqClient do
   end
 
   @impl true
+  def get_user(user_id, opts) do
+    request(:get, github_user_path(user_id), opts)
+  end
+
+  @impl true
   def get_issue(owner, repo, issue_number, opts) do
     request(:get, "/repos/#{owner}/#{repo}/issues/#{issue_number}", opts)
   end
 
   @impl true
   def list_issue_comments(owner, repo, issue_number, opts) do
-    request(:get, "/repos/#{owner}/#{repo}/issues/#{issue_number}/comments", opts)
+    request(:get, "/repos/#{owner}/#{repo}/issues/#{issue_number}/comments", opts,
+      params: comment_list_params(opts)
+    )
   end
 
   @impl true
@@ -133,6 +141,26 @@ defmodule Jido.Chat.GitHub.Transport.ReqClient do
     |> maybe_param(:sort, Keyword.get(opts, :sort))
     |> maybe_param(:direction, Keyword.get(opts, :direction))
   end
+
+  defp github_user_path(user_id) do
+    path = if numeric_github_user_id?(user_id), do: "/user/", else: "/users/"
+    path <> URI.encode(to_string(user_id))
+  end
+
+  defp numeric_github_user_id?(user_id) when is_integer(user_id), do: true
+  defp numeric_github_user_id?(user_id) when is_binary(user_id), do: user_id =~ ~r/^\d+$/
+  defp numeric_github_user_id?(_user_id), do: false
+
+  defp comment_list_params(opts) do
+    []
+    |> maybe_param(:per_page, bounded_comment_page_size(Keyword.get(opts, :per_page)))
+    |> maybe_param(:page, Keyword.get(opts, :page))
+  end
+
+  defp bounded_comment_page_size(per_page) when is_integer(per_page),
+    do: per_page |> max(1) |> min(@max_comment_page_size)
+
+  defp bounded_comment_page_size(per_page), do: per_page
 
   defp issue_create_body(title, body, opts) do
     %{title: title}
