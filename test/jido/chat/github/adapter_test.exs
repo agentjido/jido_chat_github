@@ -1,5 +1,5 @@
 defmodule Jido.Chat.GitHub.AdapterTest do
-  use ExUnit.Case, async: true
+  use Jido.Chat.AdapterTestKit, adapter: Jido.Chat.GitHub.Adapter, async: true
 
   alias Jido.Chat
   alias Jido.Chat.Adapter, as: ChatAdapter
@@ -115,20 +115,16 @@ defmodule Jido.Chat.GitHub.AdapterTest do
     end
   end
 
-  test "declares a valid capability matrix" do
-    assert :ok = ChatAdapter.validate_capabilities(Adapter)
-  end
-
-  test "sends an issue comment" do
-    assert {:ok, response} =
-             Adapter.send_message("agentjido/demo#42", "hello", transport: FakeTransport)
+  capability_test :send_message, "normalizes a sent issue comment" do
+    result = Adapter.send_message("agentjido/demo#42", "hello", transport: FakeTransport)
+    assert {:ok, response} = assert_capability_result(@adapter, :send_message, result)
 
     assert response.external_message_id == "123"
     assert response.external_room_id == "agentjido/demo#42"
     assert_received {:github_create_comment, "hello"}
   end
 
-  test "creates repository issues for channel-level posts" do
+  capability_test :post_channel_message, "normalizes repository issues as channel posts" do
     assert {:ok, response} =
              Adapter.post_channel_message("agentjido/demo", "Beta thread\n\nBody text",
                transport: FakeTransport,
@@ -158,7 +154,7 @@ defmodule Jido.Chat.GitHub.AdapterTest do
     assert rich_body =~ "![image.png](https://example.test/image.png)"
   end
 
-  test "posts rich markdown payload with reply context and remote media" do
+  capability_test :post_message, "posts rich markdown with reply context and remote media" do
     payload =
       PostPayload.new(%{
         kind: :markdown,
@@ -193,7 +189,7 @@ defmodule Jido.Chat.GitHub.AdapterTest do
     assert body =~ "[report.pdf](https://example.test/report.pdf)"
   end
 
-  test "sends remote files as GitHub markdown links and rejects local uploads" do
+  capability_test :send_file, "links remote files and rejects local uploads" do
     assert {:ok, _response} =
              Adapter.send_file(
                "agentjido/demo#42",
@@ -234,26 +230,22 @@ defmodule Jido.Chat.GitHub.AdapterTest do
     assert incoming.external_room_id == "agentjido/demo#42"
     assert [png, jpeg, encoded, extensionless, misleading, malformed] = incoming.media
 
-    assert png.kind == :image
+    assert_media(png, kind: :image, media_type: "image/png")
     assert png.url == "https://example.test/screenshot.png?token=signed"
-    assert png.media_type == "image/png"
 
-    assert jpeg.kind == :image
-    assert jpeg.media_type == "image/jpeg"
+    assert_media(jpeg, kind: :image, media_type: "image/jpeg")
 
-    assert encoded.kind == :image
+    assert_media(encoded, kind: :image, media_type: "image/png")
     assert encoded.filename == "photo.PNG"
-    assert encoded.media_type == "image/png"
 
-    assert extensionless.kind == :image
-    assert extensionless.media_type == nil
+    assert_media(extensionless, kind: :image, media_type: nil)
 
-    assert misleading.kind == :image
-    assert misleading.media_type == nil
+    assert_media(misleading, kind: :image, media_type: nil)
 
-    assert malformed.kind == :image
+    assert_media(malformed, kind: :image, media_type: nil)
     assert malformed.filename == nil
-    assert malformed.media_type == nil
+
+    assert_json_round_trip(incoming)
   end
 
   test "lists and opens GitHub issues as chat threads" do
@@ -340,7 +332,7 @@ defmodule Jido.Chat.GitHub.AdapterTest do
         payload: issue_payload()
       })
 
-    assert {:ok, %EventEnvelope{} = envelope} = Adapter.parse_event(request)
+    assert %EventEnvelope{} = envelope = assert_webhook_event(@adapter, request)
     assert envelope.adapter_name == :github
     assert envelope.event_type == :message
     assert envelope.thread_id == "github:agentjido/demo#42"

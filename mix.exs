@@ -34,7 +34,7 @@ defmodule Jido.Chat.GitHub.MixProject do
 
   defp deps do
     [
-      {:jido_chat, "~> 1.0"},
+      {:jido_chat, "~> 1.2"},
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
       {:dotenvy, "~> 1.1", only: [:test]},
