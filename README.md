@@ -70,3 +70,7 @@ Configure a GitHub App webhook, organization webhook, or repository webhook:
 - Events: `Issues`, `Issue comments`, `Reactions`
 
 The adapter treats `owner/repo#issue_number` as the external room id for issue-thread events.
+
+## Local Documentation
+
+Run `mix docs` to generate HTML and Markdown documentation in `doc/`, including Markdown pages and `llms.txt`.
