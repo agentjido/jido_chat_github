@@ -39,7 +39,7 @@ defmodule Jido.Chat.GitHub.MixProject do
       {:jason, "~> 1.4"},
       {:dotenvy, "~> 1.1", only: [:test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      {:ex_doc, "~> 0.40.4", only: :dev, runtime: false},
       {:git_ops, "~> 2.9", only: :dev, runtime: false}
     ]
   end
