@@ -2,19 +2,29 @@ defmodule Jido.Chat.GitHub.Adapter do
   @moduledoc "GitHub Issues `Jido.Chat.Adapter` implementation."
   use Jido.Chat.Adapter
 
+  alias Jido.Chat.Delivery
+  alias Jido.Chat.Errors.Contract
+  alias Jido.Chat.Signal.Identity
+  alias Jido.Chat.Signal.Policy
+
+  alias Jido.Chat.Signal.{
+    MessageReceived,
+    MessageUpdated,
+    ReactionAdded,
+    ReactionRemoved,
+    ThreadChanged,
+    ThreadStarted
+  }
+
   alias Jido.Chat.{
     Attachment,
     Author,
-    EventEnvelope,
     FileUpload,
-    Incoming,
     Media,
     Message,
     MessagePage,
     MessageSubject,
     PostPayload,
-    ReactionEvent,
-    Response,
     Thread,
     ThreadPage,
     ThreadSummary,
@@ -29,28 +39,27 @@ defmodule Jido.Chat.GitHub.Adapter do
     "+1" => "+1",
     "thumbsup" => "+1",
     "thumbs_up" => "+1",
-    <<0x1F44D::utf8>> => "+1",
+    <<128_077::utf8>> => "+1",
     "-1" => "-1",
     "thumbsdown" => "-1",
     "thumbs_down" => "-1",
-    <<0x1F44E::utf8>> => "-1",
+    <<128_078::utf8>> => "-1",
     "laugh" => "laugh",
     "smile" => "laugh",
-    <<0x1F604::utf8>> => "laugh",
+    <<128_516::utf8>> => "laugh",
     "confused" => "confused",
-    <<0x1F615::utf8>> => "confused",
+    <<128_533::utf8>> => "confused",
     "heart" => "heart",
-    <<0x2764::utf8>> => "heart",
-    <<0x2764::utf8, 0xFE0F::utf8>> => "heart",
+    <<10_084::utf8>> => "heart",
+    <<10_084::utf8, 65_039::utf8>> => "heart",
     "hooray" => "hooray",
     "tada" => "hooray",
-    <<0x1F389::utf8>> => "hooray",
+    <<127_881::utf8>> => "hooray",
     "rocket" => "rocket",
-    <<0x1F680::utf8>> => "rocket",
+    <<128_640::utf8>> => "rocket",
     "eyes" => "eyes",
-    <<0x1F440::utf8>> => "eyes"
+    <<128_064::utf8>> => "eyes"
   }
-
   @image_media_types %{
     ".avif" => "image/avif",
     ".bmp" => "image/bmp",
@@ -65,10 +74,11 @@ defmodule Jido.Chat.GitHub.Adapter do
   }
   @invalid_percent_encoding ~r/%(?![0-9A-Fa-f]{2})/
   @comment_page_size 100
-  @max_comment_pages 1_000
-
+  @max_comment_pages 1000
   @impl true
-  def channel_type, do: :github
+  def channel_type do
+    :github
+  end
 
   @impl true
   def capabilities do
@@ -89,7 +99,7 @@ defmodule Jido.Chat.GitHub.Adapter do
       post_channel_message: :native,
       webhook: :native,
       verify_webhook: :native,
-      parse_event: :native,
+      normalize_event: :native,
       format_webhook_response: :native,
       send_file: :native,
       start_typing: :unsupported,
@@ -103,18 +113,17 @@ defmodule Jido.Chat.GitHub.Adapter do
     }
   end
 
-  @impl true
-  def transform_incoming(
-        %{"comment" => comment, "issue" => issue, "repository" => repo} = payload
-      ) do
+  defp provider_message(%{"comment" => comment, "issue" => issue, "repository" => repo} = payload) do
     {:ok, incoming_from_comment(comment, issue, repo, payload)}
   end
 
-  def transform_incoming(%{"issue" => issue, "repository" => repo} = payload) do
+  defp provider_message(%{"issue" => issue, "repository" => repo} = payload) do
     {:ok, incoming_from_issue(issue, repo, payload)}
   end
 
-  def transform_incoming(_), do: {:error, :unsupported_payload}
+  defp provider_message(_) do
+    {:error, :unsupported_payload}
+  end
 
   @impl true
   def send_message(room_id, text, opts \\ []) do
@@ -137,11 +146,8 @@ defmodule Jido.Chat.GitHub.Adapter do
 
   def post_message(room_id, %PostPayload{} = payload, opts) do
     case parse_room_id(room_id) do
-      {:ok, target} ->
-        post_thread_payload(room_id, target, payload, opts)
-
-      {:error, _reason} ->
-        post_repo_payload(room_id, payload, opts)
+      {:ok, target} -> post_thread_payload(room_id, target, payload, opts)
+      {:error, _reason} -> post_repo_payload(room_id, payload, opts)
     end
   end
 
@@ -220,13 +226,32 @@ defmodule Jido.Chat.GitHub.Adapter do
     end
   end
 
+  defp query_page(opts) do
+    page = Keyword.get(opts, :cursor, Keyword.get(opts, :page, 1))
+    page = if is_binary(page), do: Integer.parse(page), else: {page, ""}
+    limit = Keyword.get(opts, :limit, Keyword.get(opts, :per_page, 30))
+
+    case page do
+      {value, ""}
+      when is_integer(value) and value > 0 and is_integer(limit) and limit in 1..100 ->
+        {:ok, opts |> Keyword.put(:page, value) |> Keyword.put(:per_page, limit)}
+
+      _ ->
+        {:error, :invalid_query_cursor}
+    end
+  end
+
+  defp next_page(items, opts) do
+    if length(items) == opts[:per_page], do: to_string(opts[:page] + 1), else: nil
+  end
+
   defp list_all_issue_comments(target, opts) do
     list_all_issue_comments(target, opts, 1, [])
   end
 
-  defp list_all_issue_comments(_target, _opts, page, _comments)
-       when page > @max_comment_pages,
-       do: {:error, :github_comment_page_limit_exceeded}
+  defp list_all_issue_comments(_target, _opts, page, _comments) when page > @max_comment_pages do
+    {:error, :github_comment_page_limit_exceeded}
+  end
 
   defp list_all_issue_comments(target, opts, page, comments) do
     page_opts = opts |> Keyword.put(:per_page, @comment_page_size) |> Keyword.put(:page, page)
@@ -282,6 +307,7 @@ defmodule Jido.Chat.GitHub.Adapter do
   @impl true
   def fetch_messages(room_id, opts \\ []) do
     with {:ok, target} <- parse_room_id(room_id),
+         {:ok, opts} <- query_page(opts),
          {:ok, comments} <-
            transport(opts).list_issue_comments(
              target.owner,
@@ -292,7 +318,7 @@ defmodule Jido.Chat.GitHub.Adapter do
       {:ok,
        MessagePage.new(%{
          messages: Enum.map(comments, &message_from_comment(&1, room_id)),
-         next_cursor: nil,
+         next_cursor: next_page(comments, opts),
          metadata: %{"raw" => comments}
        })}
     end
@@ -301,6 +327,7 @@ defmodule Jido.Chat.GitHub.Adapter do
   @impl true
   def list_threads(repo_id, opts \\ []) do
     with {:ok, target} <- parse_repo_id(repo_id),
+         {:ok, opts} <- query_page(opts),
          {:ok, issues} <- transport(opts).list_issues(target.owner, target.repo, opts) do
       threads =
         issues
@@ -310,7 +337,7 @@ defmodule Jido.Chat.GitHub.Adapter do
       {:ok,
        ThreadPage.new(%{
          threads: threads,
-         next_cursor: nil,
+         next_cursor: next_page(issues, opts),
          metadata: %{"raw" => issues}
        })}
     end
@@ -319,6 +346,7 @@ defmodule Jido.Chat.GitHub.Adapter do
   @impl true
   def fetch_channel_messages(repo_id, opts \\ []) do
     with {:ok, target} <- parse_repo_id(repo_id),
+         {:ok, opts} <- query_page(opts),
          {:ok, issues} <- transport(opts).list_issues(target.owner, target.repo, opts) do
       messages =
         issues
@@ -328,7 +356,7 @@ defmodule Jido.Chat.GitHub.Adapter do
       {:ok,
        MessagePage.new(%{
          messages: messages,
-         next_cursor: nil,
+         next_cursor: next_page(issues, opts),
          metadata: %{"raw" => issues}
        })}
     end
@@ -396,27 +424,14 @@ defmodule Jido.Chat.GitHub.Adapter do
   end
 
   @impl true
-  def handle_webhook(%Jido.Chat{} = chat, payload, opts \\ []) when is_map(payload) do
-    request =
-      WebhookRequest.new(%{
-        adapter_name: :github,
-        headers: opts[:headers] || %{},
-        payload: payload,
-        raw: opts[:raw_body] || opts[:raw] || payload,
-        metadata: %{raw_body: opts[:raw_body] || opts[:raw]}
-      })
-
-    with :ok <- verify_webhook(request, opts),
-         {:ok, parsed_event} <- parse_event(request, opts) do
-      route_parsed_event(chat, parsed_event, opts, request)
-    end
-  end
-
-  @impl true
   def verify_webhook(request, opts \\ [])
 
   def verify_webhook(%WebhookRequest{} = request, opts) do
-    secret = Keyword.get(opts, :webhook_secret) || System.get_env("GITHUB_WEBHOOK_SECRET")
+    secret =
+      if Keyword.has_key?(opts, :webhook_secret),
+        do: opts[:webhook_secret],
+        else: System.get_env("GITHUB_WEBHOOK_SECRET")
+
     signature = WebhookRequest.header(request, "x-hub-signature-256")
     raw = raw_body(request)
 
@@ -429,62 +444,22 @@ defmodule Jido.Chat.GitHub.Adapter do
   end
 
   def verify_webhook(request, opts) when is_map(request) do
-    request
-    |> WebhookRequest.new()
-    |> verify_webhook(opts)
+    request |> WebhookRequest.new() |> verify_webhook(opts)
   end
 
   @impl true
-  def parse_event(request, opts \\ [])
+  def format_webhook_response({:ok, %Delivery{}}, _opts), do: WebhookResponse.accepted()
 
-  def parse_event(%WebhookRequest{} = request, _opts) do
-    event = WebhookRequest.header(request, "x-github-event")
-    action = request.payload["action"]
+  def format_webhook_response({:error, %Contract{code: code}}, _opts),
+    do: WebhookResponse.error(400, Atom.to_string(code))
 
-    case {event, action} do
-      {"ping", _} ->
-        {:ok, :noop}
-
-      {"issue_comment", action} when action in ["created", "edited"] ->
-        with {:ok, incoming} <- transform_incoming(request.payload) do
-          {:ok, envelope(incoming, request)}
-        end
-
-      {"issues", action} when action in ["opened", "edited", "reopened"] ->
-        with {:ok, incoming} <- transform_incoming(request.payload) do
-          {:ok, envelope(incoming, request)}
-        end
-
-      {"reaction", action} when action in ["created", "deleted"] ->
-        with {:ok, reaction} <- reaction_from_payload(request.payload) do
-          {:ok, reaction_envelope(reaction, request)}
-        end
-
-      _ ->
-        {:ok, :noop}
-    end
-  end
-
-  def parse_event(request, opts) when is_map(request) do
-    request
-    |> WebhookRequest.new()
-    |> parse_event(opts)
-  end
-
-  @impl true
-  def format_webhook_response({:ok, _chat, _incoming}, _opts), do: WebhookResponse.accepted()
-  def format_webhook_response({:ok, :noop}, _opts), do: WebhookResponse.accepted()
-
-  def format_webhook_response({:error, reason}, _opts),
-    do: WebhookResponse.error(400, inspect(reason))
-
-  def format_webhook_response(_, _opts), do: WebhookResponse.accepted()
+  def format_webhook_response(_, _opts), do: WebhookResponse.error(400, "rejected")
 
   defp incoming_from_comment(comment, issue, repo, payload) do
     room_id = room_id(repo, issue)
     user = comment["user"] || %{}
 
-    Incoming.new(%{
+    %{
       external_room_id: room_id,
       external_thread_id: to_string(issue["id"] || issue["node_id"] || issue["number"]),
       external_message_id: to_string(comment["id"]),
@@ -497,14 +472,14 @@ defmodule Jido.Chat.GitHub.Adapter do
       raw: payload,
       media: media_from_markdown(comment["body"]),
       metadata: %{"html_url" => comment["html_url"], "issue_number" => issue["number"]}
-    })
+    }
   end
 
   defp incoming_from_issue(issue, repo, payload) do
     room_id = room_id(repo, issue)
     user = issue["user"] || %{}
 
-    Incoming.new(%{
+    %{
       external_room_id: room_id,
       external_thread_id: to_string(issue["id"] || issue["node_id"] || issue["number"]),
       external_message_id: to_string(issue["number"] || issue["id"]),
@@ -521,7 +496,7 @@ defmodule Jido.Chat.GitHub.Adapter do
         "issue_number" => issue["number"],
         "issue_event" => true
       }
-    })
+    }
   end
 
   defp post_thread_payload(room_id, target, %PostPayload{} = payload, opts) do
@@ -595,7 +570,7 @@ defmodule Jido.Chat.GitHub.Adapter do
   end
 
   defp response_from_comment(comment, room_id, status \\ :sent) do
-    Response.new(%{
+    %{
       external_message_id: to_string(comment["id"]),
       external_room_id: room_id,
       timestamp: comment["created_at"],
@@ -603,13 +578,13 @@ defmodule Jido.Chat.GitHub.Adapter do
       status: status,
       raw: comment,
       metadata: %{"html_url" => comment["html_url"]}
-    })
+    }
   end
 
   defp response_from_issue(issue, target, status \\ :sent) do
     room_id = "#{target.owner}/#{target.repo}##{issue["number"]}"
 
-    Response.new(%{
+    %{
       external_message_id: to_string(issue["number"] || issue["id"]),
       external_room_id: room_id,
       timestamp: issue["created_at"],
@@ -621,59 +596,11 @@ defmodule Jido.Chat.GitHub.Adapter do
         "issue_number" => issue["number"],
         "repo" => "#{target.owner}/#{target.repo}"
       }
-    })
+    }
   end
 
-  defp put_response_metadata(%Response{} = response, key, value) do
+  defp put_response_metadata(%{} = response, key, value) do
     %{response | metadata: Map.put(response.metadata || %{}, key, value)}
-  end
-
-  defp route_parsed_event(chat, :noop, _opts, %WebhookRequest{} = request) do
-    {:ok, chat, synthetic_incoming(request, :noop)}
-  end
-
-  defp route_parsed_event(chat, %EventEnvelope{} = envelope, opts, _request) do
-    with {:ok, updated_chat, routed_envelope} <-
-           Jido.Chat.process_event(chat, :github, envelope, opts),
-         {:ok, incoming} <- incoming_from_event(routed_envelope) do
-      {:ok, updated_chat, incoming}
-    end
-  end
-
-  defp incoming_from_event(%EventEnvelope{event_type: :message, payload: %Incoming{} = incoming}),
-    do: {:ok, incoming}
-
-  defp incoming_from_event(%EventEnvelope{
-         event_type: :reaction,
-         payload: %ReactionEvent{} = reaction
-       }) do
-    {:ok,
-     Incoming.new(%{
-       external_room_id: reaction.channel_id,
-       external_user_id: reaction.user && reaction.user.user_id,
-       external_message_id: reaction.message_id,
-       text: nil,
-       raw: reaction.raw,
-       metadata:
-         Map.merge(reaction.metadata || %{}, %{
-           "event_type" => :reaction,
-           "emoji" => reaction.emoji,
-           "added" => reaction.added
-         })
-     })}
-  end
-
-  defp incoming_from_event(_), do: {:error, :unsupported_event_type}
-
-  defp synthetic_incoming(%WebhookRequest{} = request, event_type) do
-    Incoming.new(%{
-      external_room_id: "github",
-      external_user_id: nil,
-      external_message_id: WebhookRequest.header(request, "x-github-delivery"),
-      text: nil,
-      raw: request.payload,
-      metadata: %{event_type: event_type}
-    })
   end
 
   defp author(user) do
@@ -694,17 +621,18 @@ defmodule Jido.Chat.GitHub.Adapter do
       email: user["email"],
       avatar_url: user["avatar_url"],
       is_bot: user["type"] == "Bot",
-      metadata: %{
-        "html_url" => user["html_url"],
-        "type" => user["type"],
-        "raw" => user
-      }
+      metadata: %{"html_url" => user["html_url"], "type" => user["type"], "raw" => user}
     })
   end
 
   defp message_subject(issue, target) do
     MessageSubject.new(%{
-      type: if(pull_request_issue?(issue), do: :pull_request, else: :issue),
+      type:
+        if pull_request_issue?(issue) do
+          :pull_request
+        else
+          :issue
+        end,
       id: issue["number"] || issue["id"] || issue["node_id"],
       title: issue["title"],
       url: issue["html_url"],
@@ -719,68 +647,27 @@ defmodule Jido.Chat.GitHub.Adapter do
     })
   end
 
-  defp valid_github_user?(user) when is_map(user),
-    do: not is_nil(user["id"] || user["node_id"] || user["login"])
-
-  defp valid_github_user?(_user), do: false
-
-  defp github_user_key(user), do: user["id"] || user["node_id"] || user["login"]
-
   defp github_label_name(%{"name" => name}), do: name
   defp github_label_name(name) when is_binary(name), do: name
   defp github_label_name(label), do: label
 
-  defp reaction_from_payload(%{"reaction" => reaction, "issue" => issue} = payload) do
-    repo = payload["repository"] || %{}
-    comment = payload["comment"]
-    room_id = room_id(repo, issue)
-    user = reaction["user"] || payload["sender"] || %{}
-    message_id = if is_map(comment), do: comment["id"], else: issue["number"] || issue["id"]
+  defp valid_github_user?(user) when is_map(user),
+    do: not is_nil(user["id"] || user["node_id"] || user["login"])
 
-    {:ok,
-     ReactionEvent.new(%{
-       adapter_name: :github,
-       thread_id: thread_id(room_id),
-       channel_id: room_id,
-       message_id: to_string(message_id),
-       emoji: reaction["content"],
-       added: payload["action"] != "deleted",
-       user: author(user),
-       raw: payload,
-       metadata: %{
-         "reaction_id" => reaction["id"],
-         "issue_number" => issue["number"],
-         "html_url" => if(is_map(comment), do: comment["html_url"], else: issue["html_url"])
-       }
-     })}
-  end
+  defp valid_github_user?(_user), do: false
+  defp github_user_key(user), do: user["id"] || user["node_id"] || user["login"]
+  defp first_title_line(nil), do: nil
 
-  defp reaction_from_payload(_payload), do: {:error, :unsupported_payload}
-
-  defp envelope(incoming, request) do
-    EventEnvelope.new(%{
-      adapter_name: :github,
-      event_type: :message,
-      thread_id: thread_id(incoming.external_room_id),
-      channel_id: incoming.external_room_id,
-      message_id: to_string(incoming.external_message_id),
-      payload: incoming,
-      raw: request.payload,
-      metadata: %{"delivery" => WebhookRequest.header(request, "x-github-delivery")}
-    })
-  end
-
-  defp reaction_envelope(%ReactionEvent{} = reaction, request) do
-    EventEnvelope.new(%{
-      adapter_name: :github,
-      event_type: :reaction,
-      thread_id: reaction.thread_id,
-      channel_id: reaction.channel_id,
-      message_id: reaction.message_id,
-      payload: reaction,
-      raw: request.payload,
-      metadata: %{"delivery" => WebhookRequest.header(request, "x-github-delivery")}
-    })
+  defp first_title_line(value) do
+    value
+    |> to_string()
+    |> String.split("\n")
+    |> Enum.find_value(fn line ->
+      case String.trim(line) do
+        "" -> nil
+        title -> title
+      end
+    end)
   end
 
   defp thread_from_issue(issue, target) do
@@ -806,17 +693,13 @@ defmodule Jido.Chat.GitHub.Adapter do
       id: thread_id(room_id),
       last_reply_at: issue["updated_at"],
       reply_count: issue["comments"] || 0,
-      root_message:
-        Message.from_incoming(incoming, adapter_name: :github, thread_id: thread_id(room_id)),
+      root_message: provider_result_message(incoming),
       metadata: %{"issue" => issue}
     })
   end
 
   defp render_text_body(text, opts) do
-    text
-    |> to_string()
-    |> sections_with_reply(opts, [])
-    |> render_sections()
+    text |> to_string() |> sections_with_reply(opts, []) |> render_sections()
   end
 
   defp render_post_body(%PostPayload{} = payload, opts) do
@@ -850,37 +733,26 @@ defmodule Jido.Chat.GitHub.Adapter do
     end
   end
 
-  defp first_title_line(nil), do: nil
-
-  defp first_title_line(value) do
-    value
-    |> to_string()
-    |> String.split("\n")
-    |> Enum.find_value(fn line ->
-      case String.trim(line) do
-        "" -> nil
-        title -> title
-      end
-    end)
+  defp metadata_value(metadata, key) when is_map(metadata) do
+    Map.get(metadata, key) || Map.get(metadata, to_string(key))
   end
 
-  defp metadata_value(metadata, key) when is_map(metadata),
-    do: Map.get(metadata, key) || Map.get(metadata, to_string(key))
-
-  defp metadata_value(_metadata, _key), do: nil
+  defp metadata_value(_metadata, _key) do
+    nil
+  end
 
   defp sections_with_reply(base, opts, extra_sections) do
     [reply_section(opts), blank_to_nil(base) | extra_sections]
   end
 
   defp render_sections(sections) do
-    body =
-      sections
-      |> Enum.reject(&is_nil/1)
-      |> Enum.join("\n\n")
-      |> String.trim()
+    body = sections |> Enum.reject(&is_nil/1) |> Enum.join("\n\n") |> String.trim()
 
-    if body == "", do: {:error, :empty_message}, else: {:ok, body}
+    if body == "" do
+      {:error, :empty_message}
+    else
+      {:ok, body}
+    end
   end
 
   defp reply_section(opts) do
@@ -900,19 +772,29 @@ defmodule Jido.Chat.GitHub.Adapter do
     case {text, message} do
       {nil, nil} -> nil
       {nil, message} -> "Replying to #{message}."
-      {text, message} -> "#{reply_heading(author, message)}\n#{quote_text(text)}"
+      {text, message} -> "#{reply_heading(author, message)}
+#{quote_text(text)}"
     end
   end
 
-  defp reply_heading(nil, nil), do: "Replying to:"
-  defp reply_heading(nil, message), do: "Replying to #{message}:"
-  defp reply_heading(author, nil), do: "Replying to #{author}:"
-  defp reply_heading(author, message), do: "Replying to #{author} in #{message}:"
+  defp reply_heading(nil, nil) do
+    "Replying to:"
+  end
+
+  defp reply_heading(nil, message) do
+    "Replying to #{message}:"
+  end
+
+  defp reply_heading(author, nil) do
+    "Replying to #{author}:"
+  end
+
+  defp reply_heading(author, message) do
+    "Replying to #{author} in #{message}:"
+  end
 
   defp quote_text(text) do
-    text
-    |> String.split("\n")
-    |> Enum.map_join("\n", &("> " <> &1))
+    text |> String.split("\n") |> Enum.map_join("\n", &("> " <> &1))
   end
 
   defp attachment_sections(attachments) when is_list(attachments) do
@@ -940,19 +822,22 @@ defmodule Jido.Chat.GitHub.Adapter do
     {:ok, section}
   end
 
-  defp attachment_section(%Attachment{}),
-    do: {:error, {:unsupported_file_upload, :github_requires_public_url}}
-
-  defp attachment_label(%Attachment{} = attachment, url) do
-    attachment.metadata[:alt_text] ||
-      attachment.metadata["alt_text"] ||
-      attachment.filename ||
-      filename_from_url(url) ||
-      "attachment"
+  defp attachment_section(%Attachment{}) do
+    {:error, {:unsupported_file_upload, :github_requires_public_url}}
   end
 
-  defp media_from_markdown(nil), do: []
-  defp media_from_markdown(""), do: []
+  defp attachment_label(%Attachment{} = attachment, url) do
+    attachment.metadata[:alt_text] || attachment.metadata["alt_text"] || attachment.filename ||
+      filename_from_url(url) || "attachment"
+  end
+
+  defp media_from_markdown(nil) do
+    []
+  end
+
+  defp media_from_markdown("") do
+    []
+  end
 
   defp media_from_markdown(markdown) when is_binary(markdown) do
     images =
@@ -981,10 +866,7 @@ defmodule Jido.Chat.GitHub.Adapter do
   defp image_media_type_from_url(url) do
     case filename_from_url(url) do
       filename when is_binary(filename) ->
-        filename
-        |> Path.extname()
-        |> String.downcase()
-        |> then(&Map.get(@image_media_types, &1))
+        filename |> Path.extname() |> String.downcase() |> then(&Map.get(@image_media_types, &1))
 
       _other ->
         nil
@@ -992,12 +874,7 @@ defmodule Jido.Chat.GitHub.Adapter do
   end
 
   defp github_reaction(emoji) do
-    normalized =
-      emoji
-      |> to_string()
-      |> String.trim()
-      |> String.trim(":")
-      |> String.downcase()
+    normalized = emoji |> to_string() |> String.trim() |> String.trim(":") |> String.downcase()
 
     case Map.fetch(@github_reactions, normalized) do
       {:ok, content} -> {:ok, content}
@@ -1007,11 +884,8 @@ defmodule Jido.Chat.GitHub.Adapter do
 
   defp reaction_id(target, message_id, content, opts) do
     case Keyword.get(opts, :reaction_id) do
-      reaction_id when reaction_id not in [nil, ""] ->
-        {:ok, reaction_id}
-
-      _ ->
-        find_reaction_id(target, message_id, content, opts)
+      reaction_id when reaction_id not in [nil, ""] -> {:ok, reaction_id}
+      _ -> find_reaction_id(target, message_id, content, opts)
     end
   end
 
@@ -1023,8 +897,13 @@ defmodule Jido.Chat.GitHub.Adapter do
     end
   end
 
-  defp reaction_id_from_match(%{"id" => id}, _content), do: {:ok, id}
-  defp reaction_id_from_match(_reaction, content), do: {:error, {:reaction_not_found, content}}
+  defp reaction_id_from_match(%{"id" => id}, _content) do
+    {:ok, id}
+  end
+
+  defp reaction_id_from_match(_reaction, content) do
+    {:error, {:reaction_not_found, content}}
+  end
 
   defp list_reactions(target, message_id, opts) do
     case reaction_target(opts) do
@@ -1067,8 +946,13 @@ defmodule Jido.Chat.GitHub.Adapter do
     end
   end
 
-  defp room_id(repo, issue), do: "#{repo["owner"]["login"]}/#{repo["name"]}##{issue["number"]}"
-  defp thread_id(room_id), do: "github:#{room_id}"
+  defp room_id(repo, issue) do
+    "#{repo["owner"]["login"]}/#{repo["name"]}##{issue["number"]}"
+  end
+
+  defp thread_id(room_id) do
+    "github:#{room_id}"
+  end
 
   defp parse_room_id(room_id) when is_binary(room_id) do
     case Regex.run(~r{\A([^/\s]+)/([^#\s]+)#(\d+)\z}, room_id) do
@@ -1080,7 +964,9 @@ defmodule Jido.Chat.GitHub.Adapter do
     end
   end
 
-  defp parse_room_id(_), do: {:error, :invalid_room_id}
+  defp parse_room_id(_) do
+    {:error, :invalid_room_id}
+  end
 
   defp parse_thread_target(room_id, opts) do
     case parse_room_id(room_id) do
@@ -1109,9 +995,13 @@ defmodule Jido.Chat.GitHub.Adapter do
     end
   end
 
-  defp parse_repo_id(_), do: {:error, :invalid_repo_id}
+  defp parse_repo_id(_) do
+    {:error, :invalid_repo_id}
+  end
 
-  defp parse_issue_number(value) when is_integer(value), do: {:ok, value}
+  defp parse_issue_number(value) when is_integer(value) do
+    {:ok, value}
+  end
 
   defp parse_issue_number(value) when is_binary(value) do
     case Integer.parse(value) do
@@ -1120,12 +1010,17 @@ defmodule Jido.Chat.GitHub.Adapter do
     end
   end
 
-  defp parse_issue_number(_value), do: {:error, :invalid_issue_number}
+  defp parse_issue_number(_value) do
+    {:error, :invalid_issue_number}
+  end
 
-  defp pull_request_issue?(%{"pull_request" => pull_request}) when is_map(pull_request),
-    do: true
+  defp pull_request_issue?(%{"pull_request" => pull_request}) when is_map(pull_request) do
+    true
+  end
 
-  defp pull_request_issue?(_issue), do: false
+  defp pull_request_issue?(_issue) do
+    false
+  end
 
   defp filename_from_url(url) when is_binary(url) do
     url
@@ -1139,41 +1034,379 @@ defmodule Jido.Chat.GitHub.Adapter do
         nil
 
       path ->
-        if(Regex.match?(@invalid_percent_encoding, path),
-          do: nil,
-          else: path |> Path.basename() |> URI.decode()
-        )
+        if Regex.match?(@invalid_percent_encoding, path) do
+          nil
+        else
+          path |> Path.basename() |> URI.decode()
+        end
     end
   rescue
     _ -> nil
   end
 
-  defp filename_from_url(_url), do: nil
-
-  defp escape_markdown_label(label) do
-    label
-    |> to_string()
-    |> String.replace("[", "\\[")
-    |> String.replace("]", "\\]")
+  defp filename_from_url(_url) do
+    nil
   end
 
-  defp blank_to_nil(nil), do: nil
-  defp blank_to_nil(""), do: nil
-  defp blank_to_nil(value) when is_binary(value), do: value
-  defp blank_to_nil(value), do: to_string(value)
+  defp escape_markdown_label(label) do
+    label |> to_string() |> String.replace("[", "\\[") |> String.replace("]", "\\]")
+  end
 
-  defp transport(opts), do: Keyword.get(opts, :transport, ReqClient)
-  defp raw_body(%WebhookRequest{raw: raw}) when is_binary(raw), do: raw
-  defp raw_body(%WebhookRequest{metadata: %{"raw_body" => raw}}) when is_binary(raw), do: raw
-  defp raw_body(%WebhookRequest{metadata: %{raw_body: raw}}) when is_binary(raw), do: raw
-  defp raw_body(%WebhookRequest{payload: payload}), do: Jason.encode!(payload)
+  defp blank_to_nil(nil) do
+    nil
+  end
 
-  defp hmac(secret, data),
-    do: :crypto.mac(:hmac, :sha256, secret, data) |> Base.encode16(case: :lower)
+  defp blank_to_nil("") do
+    nil
+  end
+
+  defp blank_to_nil(value) when is_binary(value) do
+    value
+  end
+
+  defp blank_to_nil(value) do
+    to_string(value)
+  end
+
+  defp transport(opts) do
+    Keyword.get(opts, :transport, ReqClient)
+  end
+
+  defp raw_body(%WebhookRequest{raw: raw}) when is_binary(raw) do
+    raw
+  end
+
+  defp raw_body(%WebhookRequest{metadata: %{"raw_body" => raw}}) when is_binary(raw) do
+    raw
+  end
+
+  defp raw_body(%WebhookRequest{metadata: %{raw_body: raw}}) when is_binary(raw) do
+    raw
+  end
+
+  defp raw_body(%WebhookRequest{payload: payload}) do
+    Jason.encode!(payload)
+  end
+
+  defp hmac(secret, data) do
+    :crypto.mac(:hmac, :sha256, secret, data) |> Base.encode16(case: :lower)
+  end
 
   defp secure_compare(a, b) when byte_size(a) == byte_size(b) do
     :crypto.hash_equals(a, b)
   end
 
-  defp secure_compare(_, _), do: false
+  defp secure_compare(_, _) do
+    false
+  end
+
+  @impl true
+  def signal_protocol, do: 1
+
+  @impl true
+  def normalize_event(binding, input) do
+    tracker = {__MODULE__, make_ref()}
+    Process.put(tracker, [])
+
+    result =
+      try do
+        with {:ok, items} <- native_inputs(binding, input) do
+          delivery = "github:delivery:" <> native_digest(Enum.map(items, &elem(&1, 2)))
+          base = %{binding: binding, delivery: delivery, tracker: tracker}
+
+          with {:ok, facts} <- native_items(base, items),
+               do: Delivery.new(binding, delivery, facts)
+        end
+      rescue
+        _ -> Policy.error(:invalid_delivery)
+      catch
+        _, _ -> Policy.error(:invalid_delivery)
+      end
+
+    if match?({:error, _}, result),
+      do: Enum.each(Process.get(tracker, []), &Jido.Chat.cancel_resource(binding, &1))
+
+    Process.delete(tracker)
+    result
+  end
+
+  defp native_items(base, items) do
+    items
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {{kind, payload, key}, index}, {:ok, acc} ->
+      context = Map.merge(base, %{item: "github:item:" <> key, index: index})
+      native_step(context, kind, payload, acc)
+    end)
+  end
+
+  defp native_step(context, kind, payload, acc) do
+    existing = Process.get(context.tracker)
+
+    result =
+      try do
+        native_map(context, kind, payload)
+      rescue
+        _ -> {:error, :invalid_item}
+      catch
+        _, _ -> {:error, :invalid_item}
+      end
+
+    case result do
+      {:ok, facts} ->
+        facts = List.wrap(facts)
+
+        if Enum.all?(facts, &(&1.type == "jido.chat.normalization.failed")),
+          do:
+            Enum.each(
+              Process.get(context.tracker) -- existing,
+              &Jido.Chat.cancel_resource(context.binding, &1)
+            )
+
+        {:cont, {:ok, acc ++ facts}}
+
+      {:error, %Contract{code: code}} = error
+      when code in [
+             :signal_too_large,
+             :delivery_too_large,
+             :too_many_signals,
+             :too_many_failures
+           ] ->
+        {:halt, error}
+
+      _ ->
+        Enum.each(
+          Process.get(context.tracker) -- existing,
+          &Jido.Chat.cancel_resource(context.binding, &1)
+        )
+
+        case native_failure(context, "invalid_item", kind, nil) do
+          {:ok, fact} -> {:cont, {:ok, acc ++ [fact]}}
+          error -> {:halt, error}
+        end
+    end
+  end
+
+  defp native_fact(context, definition, data, ordinal \\ "0") do
+    room = data["room_id"]
+
+    data =
+      data
+      |> Map.merge(%{
+        "item_id" => context.item <> ":" <> definition.type() <> ":" <> ordinal,
+        "delivery_id" => context.delivery
+      })
+      |> Map.reject(fn {key, value} ->
+        is_nil(value) and key not in ["text", "previous", "current", "actor_id"]
+      end)
+
+    subject =
+      if is_binary(room) and room != "",
+        do: Identity.conversation_subject(context.binding.id, room)
+
+    definition.new(data, source: context.binding.source, subject: subject)
+  end
+
+  defp native_failure(context, code, kind, room),
+    do:
+      native_fact(context, Jido.Chat.Signal.NormalizationFailed, %{
+        "code" => code,
+        "provider_kind" => kind,
+        "item_index" => context.index,
+        "room_id" => room
+      })
+
+  defp native_media(context, media) do
+    Enum.reduce_while(media, {:ok, []}, fn value, {:ok, acc} ->
+      case Jido.Chat.put_resource(context.binding, "media", value) do
+        {:ok, ref} ->
+          Process.put(context.tracker, [ref | Process.get(context.tracker)])
+
+          item =
+            %{"kind" => to_string(value.kind), "resource_ref" => ref}
+            |> native_optional("name", value.filename)
+            |> native_optional("media_type", value.media_type)
+
+          {:cont, {:ok, acc ++ [item]}}
+
+        error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  defp native_get(map, key) when is_map(map) do
+    atom =
+      try do
+        String.to_existing_atom(key)
+      rescue
+        ArgumentError -> nil
+      end
+
+    if Map.has_key?(map, key), do: Map.get(map, key), else: Map.get(map, atom)
+  end
+
+  defp native_get(_, _), do: nil
+  defp native_id(map, key), do: native_identifier(native_get(map, key))
+  defp native_identifier(value) when is_binary(value) and value != "", do: value
+  defp native_identifier(value) when is_integer(value), do: to_string(value)
+  defp native_identifier(_), do: nil
+  defp native_optional(map, _, nil), do: map
+  defp native_optional(map, key, value), do: Map.put(map, key, value)
+  defp native_time(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp native_time(value) when is_binary(value), do: value
+  defp native_time(_), do: nil
+  defp native_canonical(%_{} = value), do: value |> Map.from_struct() |> native_canonical()
+
+  defp native_canonical(value) when is_map(value),
+    do: value |> Enum.map(fn {k, v} -> {to_string(k), native_canonical(v)} end) |> Enum.sort()
+
+  defp native_canonical(value) when is_list(value), do: Enum.map(value, &native_canonical/1)
+  defp native_canonical(value), do: value
+
+  defp native_digest(value),
+    do:
+      :crypto.hash(:sha256, :erlang.term_to_binary(native_canonical(value), [:deterministic]))
+      |> Base.url_encode64(padding: false)
+
+  defp provider_result_message(incoming) do
+    %{
+      id: native_identifier(incoming.external_message_id),
+      room_id: native_identifier(incoming.external_room_id),
+      text: incoming.text,
+      thread_id: Map.get(incoming, :external_thread_id),
+      raw: Map.get(incoming, :raw),
+      timestamp: Map.get(incoming, :timestamp),
+      media: Map.get(incoming, :media, [])
+    }
+  end
+
+  @impl true
+  def configure_binding(opts) do
+    {:ok,
+     opts
+     |> Keyword.put_new(:transport, ReqClient)
+     |> Keyword.put_new(:token, System.get_env("GITHUB_TOKEN"))
+     |> Keyword.put_new(:webhook_secret, System.get_env("GITHUB_WEBHOOK_SECRET"))}
+  end
+
+  defp native_inputs(binding, %WebhookRequest{} = request) do
+    with :ok <- verify_webhook(request, binding.options) do
+      kind = WebhookRequest.header(request, "x-github-event") || "unknown"
+      id = WebhookRequest.header(request, "x-github-delivery") || native_digest(request.payload)
+      {:ok, [{kind, request.payload, id}]}
+    end
+  end
+
+  defp native_inputs(binding, items) when is_list(items) do
+    Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
+      case native_inputs(binding, item) do
+        {:ok, values} -> {:cont, {:ok, acc ++ values}}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp native_inputs(_binding, payload) when is_map(payload) do
+    kind =
+      cond do
+        native_get(payload, "reaction") -> "reaction"
+        native_get(payload, "comment") -> "issue_comment"
+        native_get(payload, "issue") -> "issues"
+        true -> native_get(payload, "type") || "unknown"
+      end
+
+    {:ok, [{kind, payload, native_digest(payload)}]}
+  end
+
+  defp native_inputs(_, _), do: Policy.error(:invalid_delivery)
+
+  defp native_map(_context, "ping", _payload), do: {:ok, []}
+
+  defp native_map(context, kind, payload),
+    do: native_action(context, kind, native_get(payload, "action"), payload)
+
+  defp native_action(context, "issue_comment", "created", payload),
+    do: native_message(context, payload, MessageReceived)
+
+  defp native_action(context, "issue_comment", "edited", payload),
+    do: native_message(context, payload, MessageUpdated)
+
+  defp native_action(context, "issues", "opened", payload) do
+    with {:ok, thread} <- native_thread(context, payload, ThreadStarted, nil),
+         {:ok, message} <- native_message(context, payload, MessageReceived),
+         do: {:ok, [thread, message]}
+  end
+
+  defp native_action(context, "issues", "edited", payload) do
+    with {:ok, thread} <- native_thread(context, payload, ThreadChanged, "updated"),
+         {:ok, message} <- native_message(context, payload, MessageUpdated),
+         do: {:ok, [thread, message]}
+  end
+
+  defp native_action(context, "issues", "reopened", payload),
+    do: native_thread(context, payload, ThreadChanged, "reopened")
+
+  defp native_action(context, "reaction", action, payload)
+       when action in ["created", "deleted"] do
+    issue = native_get(payload, "issue") || %{}
+    repo = native_get(payload, "repository") || %{}
+    reaction = native_get(payload, "reaction") || %{}
+    comment = native_get(payload, "comment")
+    definition = if action == "created", do: ReactionAdded, else: ReactionRemoved
+
+    native_fact(context, definition, %{
+      "room_id" => room_id(repo, issue),
+      "message_id" => native_id(comment, "id") || native_id(issue, "number"),
+      "actor_id" =>
+        native_id(native_get(reaction, "user") || native_get(payload, "sender"), "id"),
+      "reaction" => native_get(reaction, "content")
+    })
+  end
+
+  defp native_action(context, kind, _action, _payload),
+    do: native_failure(context, "unsupported_item", kind, nil)
+
+  defp native_message(context, payload, definition) do
+    with {:ok, incoming} <- provider_message(payload),
+         {:ok, media} <- native_media(context, incoming.media) do
+      user =
+        native_get(native_get(payload, "comment") || native_get(payload, "issue"), "user") || %{}
+
+      sender =
+        %{
+          "id" => native_id(user, "id") || native_id(user, "login"),
+          "username" => native_get(user, "login"),
+          "is_bot" => native_get(user, "type") == "Bot"
+        }
+        |> Map.reject(fn {_, v} -> is_nil(v) end)
+
+      data = %{
+        "room_id" => incoming.external_room_id,
+        "message_id" => incoming.external_message_id,
+        "thread_id" => incoming.external_thread_id,
+        "text" => incoming.text,
+        "sender" => sender,
+        "media" => media,
+        "timestamp" => native_time(incoming.timestamp)
+      }
+
+      native_fact(context, definition, data)
+    end
+  end
+
+  defp native_thread(context, payload, definition, change) do
+    issue = native_get(payload, "issue") || %{}
+    repo = native_get(payload, "repository") || %{}
+
+    data = %{
+      "room_id" => room_id(repo, issue),
+      "thread_id" => native_id(issue, "id") || native_id(issue, "number"),
+      "parent_message_id" => native_id(issue, "number"),
+      "actor_id" => native_id(native_get(payload, "sender") || native_get(issue, "user"), "id"),
+      "name" => native_get(issue, "title")
+    }
+
+    data = if change, do: Map.put(data, "change", change), else: data
+    native_fact(context, definition, data)
+  end
 end

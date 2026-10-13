@@ -1,16 +1,15 @@
 defmodule Jido.Chat.GitHub.AdapterTest do
   use Jido.Chat.AdapterTestKit, adapter: Jido.Chat.GitHub.Adapter, async: true
 
+  alias Jido.Chat.Handlers
+
   alias Jido.Chat
   alias Jido.Chat.Adapter, as: ChatAdapter
 
   alias Jido.Chat.{
-    EventEnvelope,
     MessagePage,
     MessageSubject,
-    Participant,
     PostPayload,
-    ReactionEvent,
     ThreadPage,
     UserInfo,
     WebhookRequest
@@ -203,7 +202,7 @@ defmodule Jido.Chat.GitHub.AdapterTest do
 
   test "looks up a GitHub user as normalized user information" do
     assert {:ok, %UserInfo{} = user} =
-             ChatAdapter.get_user(Adapter, "ada", transport: FakeTransport)
+             Adapter.get_user("ada", transport: FakeTransport)
 
     assert user.id == "99"
     assert user.username == "ada"
@@ -242,7 +241,7 @@ defmodule Jido.Chat.GitHub.AdapterTest do
 
   test "fetches an issue as a normalized message subject" do
     assert {:ok, %MessageSubject{} = subject} =
-             ChatAdapter.fetch_subject(Adapter, "agentjido/demo#42", transport: FakeTransport)
+             Adapter.fetch_subject("agentjido/demo#42", transport: FakeTransport)
 
     assert subject.type == "issue"
     assert subject.id == "42"
@@ -253,7 +252,7 @@ defmodule Jido.Chat.GitHub.AdapterTest do
     assert subject.metadata["labels"] == ["enhancement"]
 
     assert {:ok, %MessageSubject{type: "pull_request", id: "43", status: "closed"}} =
-             ChatAdapter.fetch_subject(Adapter, "agentjido/demo",
+             Adapter.fetch_subject("agentjido/demo",
                issue_number: 43,
                transport: FakeTransport
              )
@@ -261,20 +260,20 @@ defmodule Jido.Chat.GitHub.AdapterTest do
 
   test "returns unique issue authors, assignees, and commenters as participants" do
     assert {:ok, participants} =
-             ChatAdapter.get_thread_participants(Adapter, "agentjido/demo#42",
+             Adapter.get_thread_participants("agentjido/demo#42",
                transport: FakeTransport
              )
 
-    assert Enum.all?(participants, &match?(%Participant{}, &1))
+    assert Enum.all?(participants, &match?(%UserInfo{}, &1))
     assert Enum.map(participants, & &1.id) == ["1", "2", "3"]
-    assert Enum.map(participants, & &1.identity.username) == ["mike", "ada", "review-bot"]
-    assert Enum.map(participants, & &1.type) == [:human, :human, :agent]
-    assert Enum.all?(participants, &match?(%{github: _}, &1.external_ids))
+    assert Enum.map(participants, & &1.username) == ["mike", "ada", "review-bot"]
+    assert Enum.map(participants, & &1.is_bot) == [false, false, true]
+    assert Enum.all?(participants, &is_map(&1.metadata))
   end
 
   test "gets participants from all GitHub comment pages and removes duplicates" do
     assert {:ok, participants} =
-             ChatAdapter.get_thread_participants(Adapter, "agentjido/demo#44",
+             Adapter.get_thread_participants("agentjido/demo#44",
                transport: FakeTransport
              )
 
@@ -285,7 +284,7 @@ defmodule Jido.Chat.GitHub.AdapterTest do
 
   test "returns an error from a later GitHub comment page" do
     assert {:error, {:github_api_error, 502, %{"message" => "unavailable"}}} =
-             ChatAdapter.get_thread_participants(Adapter, "agentjido/demo#45",
+             Adapter.get_thread_participants("agentjido/demo#45",
                transport: FakeTransport
              )
   end
@@ -298,31 +297,39 @@ defmodule Jido.Chat.GitHub.AdapterTest do
     assert capabilities.get_thread_participants == :native
     assert capabilities.mark_as_read == :unsupported
 
-    assert {:error, :unsupported} =
-             ChatAdapter.mark_as_read(Adapter, "agentjido/demo#42", "123")
+    binding = native_binding()
+
+    request =
+      operation_request(binding, :mark_as_read, %{
+        "room_id" => "agentjido/demo#42",
+        "message_id" => "123"
+      })
+
+    assert {:ok, %{type: "jido.chat.operation.failed", data: %{"code" => "unsupported"}}} =
+             Chat.execute(binding, request)
 
     assert {:error, {:github_api_error, 404, %{}}} =
-             ChatAdapter.get_user(Adapter, "missing", transport: FakeTransport)
+             Adapter.get_user("missing", transport: FakeTransport)
 
     assert {:error, {:github_api_error, 404, %{}}} =
-             ChatAdapter.fetch_subject(Adapter, "agentjido/demo#404", transport: FakeTransport)
+             Adapter.fetch_subject("agentjido/demo#404", transport: FakeTransport)
 
     assert {:error, {:github_api_error, 503, %{"message" => "unavailable"}}} =
-             ChatAdapter.get_thread_participants(Adapter, "agentjido/demo#500",
+             Adapter.get_thread_participants("agentjido/demo#500",
                transport: FakeTransport
              )
   end
 
-  capability_test :send_message, "normalizes a sent issue comment" do
+  test "normalizes a sent issue comment" do
     result = Adapter.send_message("agentjido/demo#42", "hello", transport: FakeTransport)
-    assert {:ok, response} = assert_capability_result(@adapter, :send_message, result)
+    assert {:ok, response} = result
 
     assert response.external_message_id == "123"
     assert response.external_room_id == "agentjido/demo#42"
     assert_received {:github_create_comment, "hello"}
   end
 
-  capability_test :post_channel_message, "normalizes repository issues as channel posts" do
+  test "normalizes repository issues as channel posts" do
     assert {:ok, response} =
              Adapter.post_channel_message("agentjido/demo", "Beta thread\n\nBody text",
                transport: FakeTransport,
@@ -352,7 +359,7 @@ defmodule Jido.Chat.GitHub.AdapterTest do
     assert rich_body =~ "![image.png](https://example.test/image.png)"
   end
 
-  capability_test :post_message, "posts rich markdown with reply context and remote media" do
+  test "posts rich markdown with reply context and remote media" do
     payload =
       PostPayload.new(%{
         kind: :markdown,
@@ -387,7 +394,7 @@ defmodule Jido.Chat.GitHub.AdapterTest do
     assert body =~ "[report.pdf](https://example.test/report.pdf)"
   end
 
-  capability_test :send_file, "links remote files and rejects local uploads" do
+  test "links remote files and rejects local uploads" do
     assert {:ok, _response} =
              Adapter.send_file(
                "agentjido/demo#42",
@@ -424,23 +431,32 @@ defmodule Jido.Chat.GitHub.AdapterTest do
       }
     }
 
-    assert {:ok, incoming} = Adapter.transform_incoming(payload)
-    assert incoming.external_room_id == "agentjido/demo#42"
-    assert [png, jpeg, encoded, extensionless, misleading, malformed] = incoming.media
+    binding = native_binding()
+    assert {:ok, %{signals: [incoming]}} = Chat.normalize_event(binding, payload)
+    assert incoming.type == "jido.chat.message.received"
+    assert incoming.data["room_id"] == "agentjido/demo#42"
 
-    assert_media(png, kind: :image, media_type: "image/png")
+    media =
+      Enum.map(incoming.data["media"], fn item ->
+        assert {:ok, media} = Chat.resolve_resource(binding, item["resource_ref"])
+        media
+      end)
+
+    assert [png, jpeg, encoded, extensionless, misleading, malformed] = media
+
+    assert png.kind == :image and png.media_type == "image/png"
     assert png.url == "https://example.test/screenshot.png?token=signed"
 
-    assert_media(jpeg, kind: :image, media_type: "image/jpeg")
+    assert jpeg.kind == :image and jpeg.media_type == "image/jpeg"
 
-    assert_media(encoded, kind: :image, media_type: "image/png")
+    assert encoded.kind == :image and encoded.media_type == "image/png"
     assert encoded.filename == "photo.PNG"
 
-    assert_media(extensionless, kind: :image, media_type: nil)
+    assert extensionless.kind == :image and extensionless.media_type == nil
 
-    assert_media(misleading, kind: :image, media_type: nil)
+    assert misleading.kind == :image and misleading.media_type == nil
 
-    assert_media(malformed, kind: :image, media_type: nil)
+    assert malformed.kind == :image and malformed.media_type == nil
     assert malformed.filename == nil
 
     assert_json_round_trip(incoming)
@@ -470,8 +486,7 @@ defmodule Jido.Chat.GitHub.AdapterTest do
 
   test "adds and removes GitHub comment and issue reactions" do
     assert :ok =
-             ChatAdapter.add_reaction(
-               Adapter,
+             Adapter.add_reaction(
                "agentjido/demo#42",
                "123",
                "rocket",
@@ -481,8 +496,7 @@ defmodule Jido.Chat.GitHub.AdapterTest do
     assert_received {:github_create_comment_reaction, "123", "rocket"}
 
     assert :ok =
-             ChatAdapter.remove_reaction(
-               Adapter,
+             Adapter.remove_reaction(
                "agentjido/demo#42",
                "123",
                "rocket",
@@ -493,8 +507,7 @@ defmodule Jido.Chat.GitHub.AdapterTest do
     assert_received {:github_delete_comment_reaction, "123", 456}
 
     assert :ok =
-             ChatAdapter.add_reaction(
-               Adapter,
+             Adapter.add_reaction(
                "agentjido/demo#42",
                "issue",
                "rocket",
@@ -524,99 +537,102 @@ defmodule Jido.Chat.GitHub.AdapterTest do
   end
 
   test "parses issue webhooks into message envelopes" do
-    request =
-      WebhookRequest.new(%{
-        headers: %{"x-github-event" => "issues", "x-github-delivery" => "delivery-1"},
-        payload: issue_payload()
-      })
+    binding = native_binding()
+    request = signed_request("issues", issue_payload(), "delivery-1")
+    assert {:ok, unit} = Chat.normalize_event(binding, request)
+    assert [thread, message] = unit.signals
+    assert thread.type == "jido.chat.thread.started"
+    assert message.type == "jido.chat.message.received"
+    assert message.data["room_id"] == "agentjido/demo#42"
+    assert message.data["thread_id"] == "9"
+    assert message.data["text"] == "Demo body"
+    assert {:ok, repeated} = Chat.normalize_event(binding, request)
+    assert unit.id == repeated.id
 
-    assert %EventEnvelope{} = envelope = assert_webhook_event(@adapter, request)
-    assert envelope.adapter_name == :github
-    assert envelope.event_type == :message
-    assert envelope.thread_id == "github:agentjido/demo#42"
-    assert envelope.payload.text == "Demo body"
-    assert envelope.metadata == %{"delivery" => "delivery-1"}
+    assert Enum.map(unit.signals, & &1.data["item_id"]) ==
+             Enum.map(repeated.signals, & &1.data["item_id"])
+
+    Enum.each(unit.signals, &assert_json_round_trip/1)
   end
 
   test "routes a signed GitHub webhook through handle_webhook/3" do
-    payload = issue_comment_payload()
-    raw = Jason.encode!(payload)
-    secret = "github-secret"
+    binding = native_binding()
+    request = signed_request("issue_comment", issue_comment_payload(), "delivery-2")
+    assert {:ok, unit} = Chat.normalize_event(binding, request)
+    {:ok, handlers} = Handlers.new()
 
-    chat =
-      Chat.new(user_name: "jido", adapters: %{github: Adapter})
-      |> Chat.on_new_message(~r/.*/, fn _thread, incoming ->
-        send(self(), {:github_message, incoming})
+    {:ok, handlers} =
+      Handlers.on(handlers, Jido.Chat.Signal.MessageReceived, fn fact ->
+        send(self(), {:github_message, fact})
       end)
 
-    assert {:ok, _updated_chat, incoming} =
-             Adapter.handle_webhook(chat, payload,
-               headers: %{
-                 "x-github-event" => "issue_comment",
-                 "x-github-delivery" => "delivery-2",
-                 "x-hub-signature-256" => github_signature(secret, raw)
-               },
-               raw_body: raw,
-               webhook_secret: secret
-             )
-
-    assert incoming.external_room_id == "agentjido/demo#42"
-    assert incoming.external_message_id == "123"
+    assert {:ok, _, _} = Handlers.accept(handlers, binding, unit)
+    assert [incoming] = unit.signals
+    assert incoming.data["room_id"] == "agentjido/demo#42"
+    assert incoming.data["message_id"] == "123"
     assert_received {:github_message, ^incoming}
+    refute_received {:github_message, _}
   end
 
   test "treats GitHub ping webhooks as noop" do
-    request =
-      WebhookRequest.new(%{
-        headers: %{"x-github-event" => "ping"},
-        payload: %{"zen" => "Keep it logically awesome."}
-      })
-
-    assert {:ok, :noop} = Adapter.parse_event(request)
+    binding = native_binding()
+    request = signed_request("ping", %{"zen" => "Keep it logically awesome."}, "ping-1")
+    assert {:ok, %{signals: []}} = Chat.normalize_event(binding, request)
   end
 
   test "parses GitHub reaction webhooks" do
-    request =
-      WebhookRequest.new(%{
-        headers: %{"x-github-event" => "reaction", "x-github-delivery" => "delivery-3"},
-        payload: reaction_payload()
-      })
-
-    assert {:ok, %EventEnvelope{} = envelope} = Adapter.parse_event(request)
-    assert envelope.event_type == :reaction
-    assert %ReactionEvent{} = envelope.payload
-    assert envelope.payload.channel_id == "agentjido/demo#42"
-    assert envelope.payload.message_id == "123"
-    assert envelope.payload.emoji == "rocket"
-    assert envelope.payload.added == true
+    binding = native_binding()
+    request = signed_request("reaction", reaction_payload(), "delivery-3")
+    assert {:ok, %{signals: [reaction]}} = Chat.normalize_event(binding, request)
+    assert reaction.type == "jido.chat.reaction.added"
+    assert reaction.data["room_id"] == "agentjido/demo#42"
+    assert reaction.data["message_id"] == "123"
+    assert reaction.data["reaction"] == "rocket"
+    assert_json_round_trip(reaction)
   end
 
   test "routes signed GitHub reaction webhooks through handle_webhook/3" do
-    payload = reaction_payload()
-    raw = Jason.encode!(payload)
-    secret = "github-secret"
+    binding = native_binding()
+    request = signed_request("reaction", reaction_payload(), "delivery-4")
+    {:ok, handlers} = Handlers.new()
 
-    chat =
-      Chat.new(user_name: "jido", adapters: %{github: Adapter})
-      |> Chat.on_reaction("rocket", fn reaction ->
-        send(self(), {:github_reaction, reaction})
+    {:ok, handlers} =
+      Handlers.on(handlers, Jido.Chat.Signal.ReactionAdded, fn fact ->
+        send(self(), {:github_reaction, fact})
       end)
 
-    assert {:ok, _updated_chat, incoming} =
-             Adapter.handle_webhook(chat, payload,
-               headers: %{
-                 "x-github-event" => "reaction",
-                 "x-github-delivery" => "delivery-4",
-                 "x-hub-signature-256" => github_signature(secret, raw)
-               },
-               raw_body: raw,
-               webhook_secret: secret
-             )
+    assert {:ok, unit} = Chat.normalize_event(binding, request)
+    assert {:ok, _, _} = Handlers.accept(handlers, binding, unit)
+    assert [reaction] = unit.signals
+    assert reaction.data["room_id"] == "agentjido/demo#42"
+    assert reaction.data["message_id"] == "123"
+    assert_received {:github_reaction, ^reaction}
+    refute_received {:github_reaction, _}
+  end
 
-    assert incoming.external_room_id == "agentjido/demo#42"
-    assert incoming.external_message_id == "123"
-    assert incoming.metadata["event_type"] == :reaction
-    assert_received {:github_reaction, %ReactionEvent{emoji: "rocket"}}
+  defp native_binding do
+    {:ok, binding} =
+      Chat.bind(Adapter,
+        id: "github-tests",
+        transport: FakeTransport,
+        webhook_secret: "github-secret"
+      )
+
+    binding
+  end
+
+  defp signed_request(kind, payload, delivery) do
+    raw = Jason.encode!(payload)
+
+    WebhookRequest.new(%{
+      headers: %{
+        "x-github-event" => kind,
+        "x-github-delivery" => delivery,
+        "x-hub-signature-256" => github_signature("github-secret", raw)
+      },
+      payload: payload,
+      raw: raw
+    })
   end
 
   defp issue_comment_payload do

@@ -32,9 +32,19 @@ defmodule Jido.Chat.GitHub.MixProject do
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
+  defp chat_dependency do
+    case {Mix.env(), System.get_env("JIDO_CHAT_PATH")} do
+      {env, path} when env in [:dev, :test] and is_binary(path) and path != "" ->
+        {:jido_chat, path: Path.expand(path, __DIR__), override: true}
+
+      _ ->
+        {:jido_chat, "~> 2.0"}
+    end
+  end
+
   defp deps do
     [
-      {:jido_chat, "~> 1.2 and >= 1.2.1"},
+      chat_dependency(),
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
       {:dotenvy, "~> 1.1", only: [:test]},
