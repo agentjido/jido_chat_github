@@ -1111,7 +1111,9 @@ defmodule Jido.Chat.GitHub.Adapter do
     result =
       try do
         with {:ok, items} <- native_inputs(binding, input) do
-          delivery = "github:delivery:" <> native_digest(Enum.map(items, &elem(&1, 2)))
+          delivery =
+            "github:delivery:" <> native_digest({binding.id, Enum.map(items, &elem(&1, 2))})
+
           base = %{binding: binding, delivery: delivery, tracker: tracker}
 
           with {:ok, facts} <- native_items(base, items),
@@ -1290,10 +1292,11 @@ defmodule Jido.Chat.GitHub.Adapter do
   end
 
   defp native_inputs(binding, %WebhookRequest{} = request) do
-    with :ok <- verify_webhook(request, binding.options) do
+    with :ok <- verify_webhook(request, binding.options),
+         {:ok, payload} <- verified_payload(request) do
       kind = WebhookRequest.header(request, "x-github-event") || "unknown"
-      id = WebhookRequest.header(request, "x-github-delivery") || native_digest(request.payload)
-      {:ok, [{kind, request.payload, id}]}
+      id = WebhookRequest.header(request, "x-github-delivery") || native_digest(payload)
+      {:ok, [{kind, payload, id}]}
     end
   end
 
@@ -1408,5 +1411,12 @@ defmodule Jido.Chat.GitHub.Adapter do
 
     data = if change, do: Map.put(data, "change", change), else: data
     native_fact(context, definition, data)
+  end
+
+  defp verified_payload(request) do
+    case Jason.decode(raw_body(request)) do
+      {:ok, %{} = payload} -> {:ok, payload}
+      _ -> Policy.error(:invalid_delivery)
+    end
   end
 end

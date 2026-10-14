@@ -424,4 +424,16 @@ defmodule Jido.Chat.GitHub.ProtocolTest do
 
     assert calls() == []
   end
+
+  test "HTTP mapping uses the signed body and delivery identities are binding scoped", %{
+    binding: binding
+  } do
+    signed = signed("issue_comment", payload("created", true))
+    request = %{signed | payload: put_in(signed.payload, ["comment", "body"], "unsigned")}
+    assert {:ok, first} = Jido.Chat.normalize_event(binding, request)
+    assert hd(first.signals).data["text"] == "Comment"
+    {:ok, other} = Jido.Chat.bind(Adapter, id: "other", webhook_secret: "private-token")
+    assert {:ok, second} = Jido.Chat.normalize_event(other, request)
+    refute first.id == second.id
+  end
 end
