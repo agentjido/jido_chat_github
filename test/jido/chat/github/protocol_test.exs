@@ -74,7 +74,7 @@ defmodule Jido.Chat.GitHub.ProtocolTest do
     defp result(_), do: :ok
   end
 
-  @matrix Path.expand("../../../../../jido_chat/docs/migration/adapter-matrix.json", __DIR__)
+  @matrix Path.join(Mix.Project.deps_paths()[:jido_chat], "docs/migration/adapter-matrix.json")
           |> File.read!()
           |> Jason.decode!()
   @row Enum.find(@matrix["adapters"], &(&1["package"] == "jido_chat_github"))
