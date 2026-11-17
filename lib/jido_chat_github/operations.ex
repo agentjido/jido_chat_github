@@ -4,16 +4,26 @@ defmodule Jido.Chat.GitHub.Operations do
   alias Jido.Chat.{Client, Signal}
   alias Jido.Chat.GitHub.Adapter
 
-  def invoke(operation, %Client{adapter: Adapter} = client, request, opts) do
-    call(operation, client, request.data, Keyword.merge(Client.options(client), opts))
+  def invoke(
+        operation,
+        %Client{adapter: Adapter, credentials: %{token: token}} = client,
+        request,
+        opts
+      )
+      when is_binary(token) and token != "" do
+    call(operation, client, request.data, token, Keyword.merge(client.config, opts))
   end
+
+  def invoke(_, %Client{adapter: Adapter}, _, _),
+    do: {:error, {:not_attempted, :missing_token}}
 
   def invoke(_, _, _, _), do: {:error, {:not_attempted, :unsupported}}
 
-  defp call(:send_message, client, data, opts) do
+  defp call(:send_message, client, data, token, opts) do
     with {:ok, target} <- target(data["room_id"]),
          {:ok, raw} <-
            client.transport.create_issue_comment(
+             token,
              target.owner,
              target.repo,
              target.number,
@@ -24,10 +34,11 @@ defmodule Jido.Chat.GitHub.Operations do
     end
   end
 
-  defp call(:edit_message, client, data, opts) do
+  defp call(:edit_message, client, data, token, opts) do
     with {:ok, target} <- target(data["room_id"]),
          {:ok, raw} <-
            client.transport.update_issue_comment(
+             token,
              target.owner,
              target.repo,
              data["message_id"],
@@ -38,10 +49,11 @@ defmodule Jido.Chat.GitHub.Operations do
     end
   end
 
-  defp call(:delete_message, client, data, opts) do
+  defp call(:delete_message, client, data, token, opts) do
     with {:ok, target} <- target(data["room_id"]),
          :ok <-
            client.transport.delete_issue_comment(
+             token,
              target.owner,
              target.repo,
              data["message_id"],
@@ -51,10 +63,11 @@ defmodule Jido.Chat.GitHub.Operations do
     end
   end
 
-  defp call(:fetch_message, client, data, opts) do
+  defp call(:fetch_message, client, data, token, opts) do
     with {:ok, target} <- target(data["room_id"]),
          {:ok, raw} <-
            client.transport.get_issue_comment(
+             token,
              target.owner,
              target.repo,
              data["message_id"],
@@ -64,11 +77,12 @@ defmodule Jido.Chat.GitHub.Operations do
     end
   end
 
-  defp call(:fetch_messages, client, data, opts) do
+  defp call(:fetch_messages, client, data, token, opts) do
     with {:ok, target} <- target(data["room_id"]),
          {:ok, page} <- page(data),
          {:ok, raw} <-
            client.transport.list_issue_comments(
+             token,
              target.owner,
              target.repo,
              target.number,
@@ -81,8 +95,8 @@ defmodule Jido.Chat.GitHub.Operations do
     end
   end
 
-  defp call(:get_user, client, data, opts) do
-    with {:ok, raw} <- client.transport.get_user(data["user_id"], opts) do
+  defp call(:get_user, client, data, token, opts) do
+    with {:ok, raw} <- client.transport.get_user(token, data["user_id"], opts) do
       {:ok,
        %{"id" => identifier(raw["id"] || raw["login"] || data["user_id"])}
        |> optional("username", raw["login"])
@@ -90,7 +104,7 @@ defmodule Jido.Chat.GitHub.Operations do
     end
   end
 
-  defp call(_, _, _, _), do: {:error, {:not_attempted, :unsupported}}
+  defp call(_, _, _, _, _), do: {:error, {:not_attempted, :unsupported}}
 
   defp target(room_id) when is_binary(room_id) do
     case Regex.run(~r|^([^/]+)/([^#]+)#([1-9][0-9]*)$|, room_id) do
@@ -114,15 +128,25 @@ defmodule Jido.Chat.GitHub.Operations do
   end
 
   defp messages(items, room_id) when is_list(items) do
-    Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
-      case message(item, room_id, "received") do
-        {:ok, result} -> {:cont, {:ok, acc ++ [result]}}
-        error -> {:halt, error}
-      end
-    end)
+    result =
+      Enum.reduce_while(items, {:ok, []}, fn item, acc ->
+        collect_message(item, acc, room_id)
+      end)
+
+    case result do
+      {:ok, messages} -> {:ok, Enum.reverse(messages)}
+      error -> error
+    end
   end
 
   defp messages(_, _), do: {:error, :invalid_provider_result}
+
+  defp collect_message(item, {:ok, acc}, room_id) do
+    case message(item, room_id, "received") do
+      {:ok, result} -> {:cont, {:ok, [result | acc]}}
+      error -> {:halt, error}
+    end
+  end
 
   defp message(raw, room_id, status) when is_map(raw) do
     result =

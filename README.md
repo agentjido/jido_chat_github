@@ -8,64 +8,72 @@
 [![Ecosystem](https://img.shields.io/badge/ecosystem-jido.run-0ea5e9.svg)](https://jido.run/ecosystem)
 [![Discord](https://img.shields.io/badge/discord-join-5865F2.svg?logo=discord&logoColor=white)](https://jido.run/discord)
 
-`jido_chat_github` provides the `Jido.Chat.GitHub.Adapter` adapter for the public Chat Signal contract.
+`jido_chat_github` adapts GitHub issue comments to the current Jido Chat V3
+Signal and adapter contracts.
 
-## Release status
+## Local V3 status
 
-This branch proposes version 2.0. It changes the public communication API.
-Use the immutable PR source commits for review and tests. The new Hex releases
-are not yet published. Production requires Chat 2.0 and compatible upstream
-Signal releases. The dependency helpers keep source pins in development and test.
+The `release/v3` branch uses the sibling `../jido_chat` working tree for local
+integration. It is not a published Hex dependency. Publication must select the
+released Jido Chat V3 Hex package and repeat all package checks.
 
-## Typed operations
+## Client and operations
 
-The application supplies private binding options and a provider room ID:
+Create an immutable client. Store the token in `credentials`. Store adapter
+settings, such as a test API base URL, in `config`.
 
 ```elixir
-{:ok, binding} = Jido.Chat.bind(Jido.Chat.GitHub.Adapter, private_binding_options)
-request = Jido.Chat.Signal.SendMessage.new!(%{
-  "request_id" => "request-1",
-  "room_id" => provider_room_id,
-  "text" => "Hello"
-})
-{:ok, result} = Jido.Chat.execute(binding, request)
+client = Jido.Chat.Client.new!(Jido.Chat.GitHub.Adapter,
+  id: "support-github",
+  credentials: %{token: System.fetch_env!("GITHUB_TOKEN")}
+)
+
+{:ok, result} =
+  Jido.Chat.send_text(client, "agentjido/jido_chat#123", "Hello from Jido")
+
+comment_id = result.data["result"]["id"]
 ```
 
-The result is an OperationCompleted or OperationFailed signal. Repeating an
-admitted request uses its saved result. Private tokens, clients and resources
-stay outside signal data. Unsupported operations return a defined typed result.
+A GitHub Room ID has the form `owner/repository#issue_number`.
+
+The current native operations are:
+
+- `send_message`
+- `edit_message`
+- `delete_message`
+- `fetch_message`
+- `fetch_messages`
+- `get_user`
+
+All other core operations are explicitly unsupported. Unsupported operations
+stop before provider I/O.
 
 ## Inbound delivery
 
-Normalize one complete verified provider input unit with the configured binding:
+Verify the GitHub webhook signature before normalization. Pass one complete,
+verified webhook payload to the client.
 
 ```elixir
-{:ok, delivery} = Jido.Chat.normalize_event(binding, verified_provider_input)
-{:ok, observations} = MyApp.Messaging.accept_delivery(delivery)
+{:ok, delivery} = Jido.Chat.normalize(client, verified_webhook_payload)
+signals = delivery.signals
 ```
 
-The Messaging instance owns runtime acceptance. Deliveries retain ordered facts
-and explicit item failures. Membership evidence does not create grants or start
-message handlers. A rejected listener sink follows the provider checkpoint rule.
-Configure protocol version 1 before starting provider listeners.
+The adapter normalizes created and edited issue comments. The host decides how
+to send the resulting Signals to its Jido Chat plugin or Runtime. Jido Chat
+core owns managed Rooms, provider declarations, bridges, storage, and the
+application Signal Bus. This package starts no managed process tree.
 
-## Operation support
+## Private data boundary
 
-Native: `send_message`, `send_file`, `post_message`, `edit_message`, `delete_message`, `fetch_thread`, `fetch_message`, `get_user`, `fetch_subject`, `get_thread_participants`, `add_reaction`, `remove_reaction`, `post_channel_message`, `fetch_messages`, `fetch_channel_messages`, `list_threads`, `open_thread`.
+The adapter passes the token to the transport as a distinct private argument.
+It does not add the token to generic transport options or Signal data. The
+default Req transport also accepts private adapter config, such as `base_url`,
+through the client config list.
 
-Fallback: `fetch_metadata`, `stream`.
+## Checks
 
-All other operations are explicitly unsupported. See the frozen [adapter matrix](https://github.com/agentjido/jido_chat/blob/codex/public-signal-v3/docs/migration/adapter-matrix.json).
+Run `mix test` and `mix quality`. Live tests stay tagged `:live` and excluded
+by default. They run only when `RUN_LIVE_GITHUB_TESTS` and the required GitHub
+environment values are set.
 
-## Provider setup
-
-GitHub uses issue and comment conversations. Verify webhook signatures before acceptance. Keep installation credentials and clients in the binding. The transport can be replaced for deterministic tests.
-
-## Checks and migration
-
-Run `mix test` and `mix quality`. Live tests stay excluded by default. The fixed
-provider fixtures do not need credentials or live traffic.
-
-See the [migration guide](https://github.com/agentjido/jido_chat/blob/codex/public-signal-v3/docs/migration/MIGRATION_GUIDE.md)
-for API mappings, the complete runnable local example, limits, release order and
-rollback pins. Run `mix docs` to build this package's API documentation.
+See `docs/v3-upgrade-validation.md` for current local evidence.

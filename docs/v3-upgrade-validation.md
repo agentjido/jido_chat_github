@@ -1,174 +1,67 @@
-# Consolidated Jido upgrade validation: github
+# Jido Chat V3 validation: GitHub
 
-Date: 2026-11-14 (America/Chicago).
+Date: 2026-11-16 (America/Chicago).
 
-Start: `release/v3` at `f54654d664b9ecc4e90ebeb65ab482f15dd48f8e`. The working tree was clean.
-Origin: `agentjido/jido_chat_github`. The remote head matched the starting revision.
+## Scope
 
-## Changes
+The GitHub `release/v3` branch is validated against the current sibling
+`../jido_chat` working tree. The core uses consolidated Jido V3. This is local
+integration evidence. It is not Hex publication or live provider evidence.
 
-The adapter uses Chat `7652b6d74c4fc8170149ae1cfd08f981cfb1ea27` in all environments.
-The GitHub `release/v3` API confirmed this revision before selection.
-The old Chat revision was `0b6f16d9b91b37c61f2ad913dcdd4adea1713f88`.
-The local path override was removed. Dotenvy `~> 1.2` is a runtime dependency, as required by LLMDB.
-The lock removes separate Action and Signal providers. No package version or quality gate was changed.
+The adapter keeps these V3 boundaries:
 
-Changed files:
+- one stateless `Jido.Chat.Adapter` for GitHub REST operations;
+- strict native or unsupported capability values;
+- typed core request, result, and inbound Signals;
+- direct normalization of verified webhook input;
+- provider credentials in `Client.credentials`;
+- adapter settings in `Client.config`;
+- provider transport in `Client.transport`;
+- managed Room and provider runtime in Jido Chat core.
 
-- `mix.exs`
-- `mix.lock`
-- `docs/v3-upgrade-validation.md`
+## Current migration changes
 
-## Checks
+- Replaced the fixed remote Jido Chat source with `path: "../jido_chat"` for
+  every local environment.
+- Removed the stale Jido Chat lock entry and selected the consolidated Jido V3
+  commit required by the local core.
+- Retained the later `git_ops` lock update from `origin/main` without a
+  cherry-pick commit.
+- Replaced the removed credential-merging client helper with explicit
+  credentials, config, and transport access.
+- Moved the token to a distinct transport argument. Generic transport options
+  contain adapter config but no token or credentials key.
+- Added direct missing-token and credential-separation tests.
+- Replaced stale binding, capability, source-pin, and separate-runtime-owner
+  documentation with the current Jido Chat V3 contract.
 
-Checks ran in an isolated copy made from the starting revision.
-The candidate source files were copied without changes after checks.
-Toolchain: Elixir 1.20.4, Erlang/OTP 29.1.2, macOS arm64.
-GitHub was the canary. Its first quality gate passed before shared changes were applied.
-The pinned Chat owner test suite passed all 358 tests in a separate copy.
+## Offline evidence
 
-| Command | Exit | Result |
-| --- | ---: | --- |
-| `mix quality` | 0 | Pass |
-| `mix test` | 0 | Pass |
-| `mix docs -f html -f markdown` | 0 | Pass |
-| `MIX_ENV=prod mix compile --warnings-as-errors` | 0 | Pass |
-| `MIX_ENV=prod mix hex.build` | 1 | Blocked: Git dependency is not valid for Hex publication |
-| `MIX_ENV=test mix deps.tree` | 0 | Pass |
-| Module owner and split provider check | 0 | All four module owners are `:jido`; no split providers |
+Normal tests use a fixed transport and fixtures. They make no GitHub request.
+Live tests keep the `:live` tag and remain excluded by default.
 
-Test result:
+The current result is 15 offline tests passed and one live test excluded. The
+Adapter Test Kit contract gate passes 10 tests. Built-in coverage is 96.13%.
+Quality, HTML and Markdown documentation, production compile, unused
+dependency, compile-graph, dependency-tree, retired-reference, diff, and
+design-review checks pass. The compile graph has six files, no compile edges,
+and no cycles. Production compilation reports dependency compiler warnings
+only.
 
-```text
-Excluding tags: [live: true]
-Finished in 0.2 seconds (0.2s async, 0.00s sync)
-Result: 3 passed, 1 excluded
-```
-
-## Final dependency graph
-
-```text
-jido_chat_github
-└── jido_chat 7652b6d74c4fc8170149ae1cfd08f981cfb1ea27
-    ├── jido 05723b96c6ead47dec04fe69b1c34ad62f999c54
-    │   ├── req_llm 1.30.0
-    │   └── zoi 0.19.0
-    └── zoi 0.19.0
-```
-
-The BEAM module owner check returned `:jido` for `Jido.Agent`, `Jido.Action`, `Jido.Signal`, and `Jido.AI`.
-The resolved graph and lock have no `jido_action`, `jido_signal`, or `jido_ai` package.
-No sibling path dependency is selected. The same Chat Git pin applies in production.
-
-Full dependency tree:
+## Dependency boundary
 
 ```text
 jido_chat_github
-├── credo ~> 1.7 (Hex package)
-│   ├── bunt ~> 0.2.1 or ~> 1.0 (Hex package)
-│   ├── file_system ~> 0.2 or ~> 1.0 (Hex package)
-│   └── jason ~> 1.0 (Hex package)
-├── dotenvy ~> 1.2 (Hex package)
-├── ex_doc ~> 0.40.4 (Hex package)
-│   ├── earmark_parser ~> 1.4.46 (Hex package)
-│   ├── makeup_elixir ~> 0.14 or ~> 1.0 (Hex package)
-│   │   ├── makeup ~> 1.0 (Hex package)
-│   │   │   └── nimble_parsec ~> 1.4 (Hex package)
-│   │   └── nimble_parsec ~> 1.2.3 or ~> 1.3 (Hex package)
-│   └── makeup_erlang ~> 0.1 or ~> 1.0 (Hex package)
-│       └── makeup ~> 1.0 (Hex package)
-├── git_ops ~> 2.9 (Hex package)
-│   ├── git_cli ~> 0.2 (Hex package)
-│   ├── jason ~> 1.0 (Hex package)
-│   ├── nimble_parsec ~> 1.0 (Hex package)
-│   └── req ~> 0.5 (Hex package)
-├── jason ~> 1.4 (Hex package)
-│   └── decimal ~> 1.0 or ~> 2.0 or ~> 3.0 (Hex package)
-├── jido_chat (https://github.com/agentjido/jido_chat.git - 7652b6d74c4fc8170149ae1cfd08f981cfb1ea27)
-│   ├── boundary ~> 0.11 (Hex package)
-│   ├── jason ~> 1.4 (Hex package)
-│   ├── jido (https://github.com/agentjido/jido.git - 05723b96c6ead47dec04fe69b1c34ad62f999c54) *override*
-│   │   ├── multigraph ~> 0.16.1-mg.5 (Hex package)
-│   │   ├── req_llm ~> 1.30 (Hex package)
-│   │   │   ├── dotenvy ~> 1.2 (Hex package)
-│   │   │   ├── finch ~> 0.24 (Hex package)
-│   │   │   │   ├── mime ~> 1.0 or ~> 2.0 (Hex package)
-│   │   │   │   ├── mint ~> 1.8 (Hex package)
-│   │   │   │   │   └── hpax ~> 1.1 (Hex package)
-│   │   │   │   ├── nimble_options ~> 0.4 or ~> 1.0 (Hex package)
-│   │   │   │   ├── nimble_pool ~> 1.1 (Hex package)
-│   │   │   │   └── telemetry ~> 0.4 or ~> 1.0 (Hex package)
-│   │   │   ├── jason ~> 1.4 (Hex package)
-│   │   │   ├── jsv >= 0.26.2 and < 1.0.0-0 (Hex package)
-│   │   │   │   ├── abnf_parsec ~> 2.0 (Hex package)
-│   │   │   │   │   └── nimble_parsec ~> 1.4 (Hex package)
-│   │   │   │   ├── decimal ~> 2.0 or ~> 3.0 (Hex package)
-│   │   │   │   ├── idna ~> 6.0 or ~> 7.0 (Hex package)
-│   │   │   │   ├── jason ~> 1.0 (Hex package)
-│   │   │   │   └── texture >= 1.2.1 (Hex package)
-│   │   │   │       └── abnf_parsec ~> 2.0 (Hex package)
-│   │   │   ├── llm_db ~> 2026.11.0 (Hex package)
-│   │   │   │   ├── dotenvy ~> 1.2 (Hex package)
-│   │   │   │   ├── jason ~> 1.4 (Hex package)
-│   │   │   │   ├── req ~> 0.7 (Hex package)
-│   │   │   │   ├── toml ~> 0.7 (Hex package)
-│   │   │   │   └── zoi ~> 0.19.0 (Hex package)
-│   │   │   ├── nimble_options ~> 1.2 (Hex package)
-│   │   │   ├── req ~> 0.7 (Hex package)
-│   │   │   ├── server_sent_events ~> 1.1.0 (Hex package)
-│   │   │   ├── splode ~> 0.3.3 (Hex package)
-│   │   │   ├── websockex ~> 0.5.1 (Hex package)
-│   │   │   │   └── telemetry ~> 1.0 (Hex package)
-│   │   │   └── zoi ~> 0.19.0 (Hex package)
-│   │   ├── runic ~> 0.1.0-alpha.13 (Hex package)
-│   │   │   ├── flow ~> 1.2 (Hex package)
-│   │   │   │   └── gen_stage ~> 1.0 (Hex package)
-│   │   │   ├── gen_stage ~> 1.2 (Hex package)
-│   │   │   ├── multigraph ~> 0.16.1-mg.5 (Hex package)
-│   │   │   ├── telemetry ~> 1.0 (Hex package)
-│   │   │   └── uniq ~> 0.6.1 (Hex package)
-│   │   ├── sched_ex ~> 1.2.1 (Hex package)
-│   │   │   └── crontab ~> 1.1 (Hex package)
-│   │   ├── spark ~> 2.7.3 (Hex package)
-│   │   ├── splode ~> 0.3.0 (Hex package)
-│   │   ├── telemetry ~> 1.3 (Hex package)
-│   │   ├── telemetry_metrics ~> 1.2 (Hex package)
-│   │   │   └── telemetry ~> 0.4 or ~> 1.0 (Hex package)
-│   │   ├── yaml_elixir ~> 2.12 (Hex package)
-│   │   │   └── yamerl ~> 0.10 (Hex package)
-│   │   └── zoi ~> 0.19.0 (Hex package)
-│   ├── mdex ~> 0.14.2 (Hex package)
-│   │   ├── jason ~> 1.0 (Hex package)
-│   │   ├── mdex_native >= 0.2.11 (Hex package)
-│   │   │   └── rustler_precompiled ~> 0.8 (Hex package)
-│   │   ├── nimble_options ~> 1.0 (Hex package)
-│   │   └── nimble_parsec ~> 1.0 (Hex package)
-│   ├── spark ~> 2.7 (Hex package)
-│   │   └── jason ~> 1.4 (Hex package)
-│   ├── splode ~> 0.3.0 (Hex package)
-│   └── zoi ~> 0.19.0 (Hex package)
-│       └── decimal ~> 2.2 or ~> 3.0 (Hex package)
-└── req ~> 0.5 (Hex package)
-    ├── finch ~> 0.21 (Hex package)
-    ├── jason ~> 1.0 (Hex package)
-    └── mime ~> 2.0.6 or ~> 2.1 (Hex package)
+└── jido_chat (path: ../jido_chat)
+    └── jido (consolidated V3 source selected by Jido Chat)
 ```
 
-## Publication limit and remaining work
+The adapter lock contains no Jido Chat remote source. Package publication must
+later replace the local path with the released Jido Chat V3 Hex constraint and
+repeat the same gates.
 
-`MIX_ENV=prod mix hex.build` fails with:
+## Live evidence
 
-```text
-Dependencies excluded from the package (only Hex packages can be dependencies): jido_chat
-```
-
-This is a Hex publication limit. Production compilation and the package behavior checks passed.
-Keep the Git pin for this candidate. Do not remove the Hex validation gate.
-Release consolidated Jido first, then Chat, then the adapters.
-Before an adapter Hex release, replace the Git dependency with the released Chat constraint,
-resolve the lock again, and run the same checks.
-
-No live or paid provider calls ran. Live tests stayed excluded.
-Provider credentials, permissions, remote delivery, webhooks, sockets, and external service behavior remain untested.
-The current CI toolchain matrix was not reproduced locally. The verdict is self-checked.
-No Chat/core, Mattermost, Messaging, or workspace task-list file was changed.
+No live or paid provider call ran. GitHub credentials, permissions, remote
+REST delivery, webhook verification, and external service behavior are not
+verified by this local unit.

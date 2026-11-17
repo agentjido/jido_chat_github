@@ -19,14 +19,20 @@ defmodule Jido.Chat.GitHub.Normalizer do
   def normalize(_, _), do: Policy.error(:invalid_delivery)
 
   defp map_items(client, delivery_id, items) do
-    items
-    |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {item, index}, {:ok, acc} ->
-      case map_item(client, delivery_id, item, index) do
-        {:ok, signal} -> {:cont, {:ok, acc ++ [signal]}}
-        error -> {:halt, error}
-      end
-    end)
+    result =
+      items
+      |> Enum.with_index()
+      |> Enum.reduce_while({:ok, []}, fn {item, index}, {:ok, acc} ->
+        case map_item(client, delivery_id, item, index) do
+          {:ok, signal} -> {:cont, {:ok, [signal | acc]}}
+          error -> {:halt, error}
+        end
+      end)
+
+    case result do
+      {:ok, signals} -> {:ok, Enum.reverse(signals)}
+      error -> error
+    end
   end
 
   defp map_item(client, delivery_id, item, index) when is_map(item) do
