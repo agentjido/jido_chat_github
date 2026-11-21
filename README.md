@@ -1,5 +1,10 @@
 # Jido Chat GitHub
 
+> [!IMPORTANT]
+> **The standalone GitHub adapter is planned for deprecation.** The planned destination is the [Jido Chat v3 source](https://github.com/agentjido/jido_chat/tree/release/v3).
+>
+> Continue to use the standalone adapter until Jido Chat provides the GitHub operations you need.
+
 [![Hex.pm](https://img.shields.io/hexpm/v/jido_chat_github.svg)](https://hex.pm/packages/jido_chat_github)
 [![Hex Docs](https://img.shields.io/badge/hex-docs-lightgreen.svg)](https://hexdocs.pm/jido_chat_github/)
 [![CI](https://github.com/agentjido/jido_chat_github/actions/workflows/ci.yml/badge.svg)](https://github.com/agentjido/jido_chat_github/actions/workflows/ci.yml)
